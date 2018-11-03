@@ -14,7 +14,7 @@ lint: $(GOPATH)/bin/golint
 	golint -set_exit_status ./...
 
 $(GOPATH)/bin/golint:
-	go get github.com/golang/lint/golint
+	go get golang.org/x/lint/golint
 
 vet:
 	go vet $(PKGS_NOVENDOR)
