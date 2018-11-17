@@ -5,7 +5,7 @@ import (
 	"testing"
 )
 
-func TestReadConfigFile(t *testing.T) {
+func TestParseConfig(t *testing.T) {
 	cases := []struct {
 		path string
 		err  bool
@@ -32,7 +32,7 @@ func TestReadConfigFile(t *testing.T) {
 	}
 	for _, c := range cases {
 		out := make(map[string]string)
-		if err := readFromConfigFile(c.path, out); err != nil {
+		if err := parseConfig(c.path, out); err != nil {
 			if !c.err {
 				t.Errorf("expected error when parsing %s but it succeeded", c.path)
 			}
@@ -44,7 +44,7 @@ func TestReadConfigFile(t *testing.T) {
 	}
 }
 
-func TestGetFromFiles(t *testing.T) {
+func TestLoadConfig(t *testing.T) {
 	cases := []struct {
 		paths []string
 		err   bool
@@ -62,7 +62,7 @@ func TestGetFromFiles(t *testing.T) {
 		},
 	}
 	for _, c := range cases {
-		out, err := GetFromFiles(c.paths...)
+		out, err := LoadConfig(c.paths...)
 		if err != nil {
 			if !c.err {
 				t.Errorf("expected error when parsing %s but it succeeded", c.paths)
