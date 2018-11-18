@@ -1,3 +1,4 @@
+// Package sysctl provides functions wrapping the sysctl interface.
 package sysctl
 
 import (
