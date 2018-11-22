@@ -33,5 +33,5 @@ err = sysctl.Set("net.ipv4.ip_forward", "1")
 
 // Set sysctl values from configuration file
 // This is equivalent to running "sysctl -p <config-file>"
-err = LoadConfigAndApply("/etc/sysctl.conf")
+err = sysctl.LoadConfigAndApply("/etc/sysctl.conf")
 ```
