@@ -1,5 +1,9 @@
 # Go Sysctl
 
+[![GoDoc](https://godoc.org/github.com/lorenzosaino/go-sysctl?status.svg)](https://godoc.org/github.com/lorenzosaino/go-sysctl)
+[![Build Status](https://travis-ci.org/lorenzosaino/go-sysctl.svg?branch=master)](https://travis-ci.org/lorenzosaino/go-sysctl)
+[![License](https://img.shields.io/github/license/lorenzosaino/go-sysctl.svg)](https://github.com/lorenzosaino/go-sysctl/blob/master/LICENSE)
+
 Golang wrapper around the sysctl interface.
 
 ## Documentation
