@@ -29,7 +29,7 @@ func TestGetPattern(t *testing.T) {
 		t.Fatalf("Could not get sysctl values for pattern %s: %s", pattern, err.Error())
 	}
 	if len(got) < len(expected) {
-		// We check if lenght is < than expected to prevent
+		// We check if length is < than expected to prevent
 		// breaking test cases if new sysctls are added
 		t.Fatalf("Expected at least %d matches, got %d. Matches: %+v",
 			len(expected), len(got), got)
