@@ -1,37 +1,38 @@
-.PHONY: all fmt-check lint vet staticcheck test container-debug container-all
+.PHONY: all fmt-check lint vet staticcheck test container-shell container-test
 
+GO ?= go
+
+# Variables for container targets
 GO_VERSION ?= latest
 CONTAINER = golang:$(GO_VERSION)
-LOCAL ?= $(PWD)
-MOUNT ?= /go/src/github.com/lorenzosaino/go-sysctl
-PKGS_NOVENDOR = $(shell go list ./... | grep -v '/vendor/')
+PKG = github.com/lorenzosaino/go-sysctl
+DOCKER_RUN_FLAGS = --rm -v $$(pwd):/go/src/$(PKG) -w /go/src/$(PKG)
+
+PKGS = $(shell go list ./... | grep -v '/vendor/')
+
+all: fmt-check lint vet staticcheck test
 
 # Ensure that all source files pass "go fmt"
 fmt-check:
-	exit `go fmt $(PKGS_NOVENDOR) | wc -l`
-
-lint: $(GOPATH)/bin/golint
-	golint -set_exit_status ./...
-
-$(GOPATH)/bin/golint:
-	go get golang.org/x/lint/golint
+	exit $(shell $(GO) fmt ./... | wc -l)
 
 vet:
-	go vet $(PKGS_NOVENDOR)
+	$(GO) vet ./...
 
-staticcheck: $(GOPATH)/bin/staticcheck
-	staticcheck $(PKGS_NOVENDOR)
+staticcheck:
+	[ -x "$(shell which staticcheck)" ] || $(GO) install ./vendor/honnef.co/go/tools/cmd/staticcheck 2>/dev/null || $(GO) get -u honnef.co/go/tools/cmd/staticcheck
+	staticcheck ./...
 
-$(GOPATH)/bin/staticcheck:
-	go get honnef.co/go/tools/cmd/staticcheck
+lint:
+	[ -x "$(shell which golint)" ] || $(GO) install ./vendor/golang.org/x/lint/golint 2>/dev/null || $(GO) get -u golang.org/x/lint/golint
+	# We need to explicitly exclude ./vendor becuase of https://github.com/golang/lint/issues/320
+	golint -set_exit_status $(shell $(GO)  list ./... | grep -v '/vendor/')
 
 test:
-	go test $(PKGS_NOVENDOR)
+	$(GO) test -v ./...
 
 container-shell:
-	docker run -it -v $(LOCAL):$(MOUNT) -w $(MOUNT) $(CONTAINER) /bin/bash
+	docker run $(DOCKER_RUN_FLAGS) $(CONTAINER) /bin/bash
 
-container-all:
-	docker run -it -v $(LOCAL):$(MOUNT) -w $(MOUNT) $(CONTAINER) make all
-
-all: fmt-check lint vet staticcheck test
+container-test:
+	docker run $(DOCKER_RUN_FLAGS) $(CONTAINER) make all
