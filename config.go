@@ -26,7 +26,7 @@ func parseConfig(path string, out map[string]string) error {
 		if parsed == "" {
 			continue
 		}
-		tokens := strings.Split(parsed, " = ")
+		tokens := strings.Split(parsed, "=")
 		if len(tokens) != 2 {
 			return fmt.Errorf("could not parse line %s", line)
 		}
