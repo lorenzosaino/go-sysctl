@@ -6,7 +6,7 @@ GO ?= go
 GO_VERSION ?= latest
 CONTAINER = golang:$(GO_VERSION)
 PKG = github.com/lorenzosaino/go-sysctl
-DOCKER_RUN_FLAGS = --rm -v $$(pwd):/go/src/$(PKG) -w /go/src/$(PKG)
+DOCKER_RUN_FLAGS = --rm -it -v $$(pwd):/go/src/$(PKG) -w /go/src/$(PKG)
 
 PKGS = $(shell go list ./... | grep -v '/vendor/')
 
