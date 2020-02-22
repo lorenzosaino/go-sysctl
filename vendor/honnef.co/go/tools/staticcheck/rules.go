@@ -13,9 +13,9 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"honnef.co/go/tools/lint"
-	"honnef.co/go/tools/ssa"
-	"honnef.co/go/tools/staticcheck/vrp"
+	"golang.org/x/tools/go/analysis"
+	"honnef.co/go/tools/code"
+	"honnef.co/go/tools/ir"
 )
 
 const (
@@ -25,12 +25,11 @@ const (
 )
 
 type Call struct {
-	Job   *lint.Job
-	Instr ssa.CallInstruction
+	Pass  *analysis.Pass
+	Instr ir.CallInstruction
 	Args  []*Argument
 
-	Checker *Checker
-	Parent  *ssa.Function
+	Parent *ir.Function
 
 	invalids []string
 }
@@ -44,22 +43,21 @@ type Argument struct {
 	invalids []string
 }
 
+type Value struct {
+	Value ir.Value
+}
+
 func (arg *Argument) Invalid(msg string) {
 	arg.invalids = append(arg.invalids, msg)
 }
 
-type Value struct {
-	Value ssa.Value
-	Range vrp.Range
-}
-
 type CallCheck func(call *Call)
 
-func extractConsts(v ssa.Value) []*ssa.Const {
+func extractConsts(v ir.Value) []*ir.Const {
 	switch v := v.(type) {
-	case *ssa.Const:
-		return []*ssa.Const{v}
-	case *ssa.MakeInterface:
+	case *ir.Const:
+		return []*ir.Const{v}
+	case *ir.MakeInterface:
 		return extractConsts(v.X)
 	default:
 		return nil
@@ -118,20 +116,6 @@ func ValidateURL(v Value) error {
 	return nil
 }
 
-func IntValue(v Value, z vrp.Z) bool {
-	r, ok := v.Range.(vrp.IntInterval)
-	if !ok || !r.IsKnown() {
-		return false
-	}
-	if r.Lower != r.Upper {
-		return false
-	}
-	if r.Lower.Cmp(z) == 0 {
-		return true
-	}
-	return false
-}
-
 func InvalidUTF8(v Value) bool {
 	for _, c := range extractConsts(v.Value) {
 		if c.Value == nil {
@@ -149,13 +133,21 @@ func InvalidUTF8(v Value) bool {
 }
 
 func UnbufferedChannel(v Value) bool {
-	r, ok := v.Range.(vrp.ChannelInterval)
-	if !ok || !r.IsKnown() {
+	// TODO(dh): this check of course misses many cases of unbuffered
+	// channels, such as any in phi or sigma nodes. We'll eventually
+	// replace this function.
+	val := v.Value
+	if ct, ok := val.(*ir.ChangeType); ok {
+		val = ct.X
+	}
+	mk, ok := val.(*ir.MakeChan)
+	if !ok {
 		return false
 	}
-	if r.Size.Lower.Cmp(vrp.NewZ(0)) == 0 &&
-		r.Size.Upper.Cmp(vrp.NewZ(0)) == 0 {
-		return true
+	if k, ok := mk.Size.(*ir.Const); ok && k.Value.Kind() == constant.Int {
+		if v, ok := constant.Int64Val(k.Value); ok && v == 0 {
+			return true
+		}
 	}
 	return false
 }
@@ -169,7 +161,7 @@ func Pointer(v Value) bool {
 }
 
 func ConvertedFromInt(v Value) bool {
-	conv, ok := v.Value.(*ssa.Convert)
+	conv, ok := v.Value.(*ir.Convert)
 	if !ok {
 		return false
 	}
@@ -183,7 +175,7 @@ func ConvertedFromInt(v Value) bool {
 	return true
 }
 
-func validEncodingBinaryType(j *lint.Job, typ types.Type) bool {
+func validEncodingBinaryType(pass *analysis.Pass, typ types.Type) bool {
 	typ = typ.Underlying()
 	switch typ := typ.(type) {
 	case *types.Basic:
@@ -193,19 +185,19 @@ func validEncodingBinaryType(j *lint.Job, typ types.Type) bool {
 			types.Float32, types.Float64, types.Complex64, types.Complex128, types.Invalid:
 			return true
 		case types.Bool:
-			return j.IsGoVersion(8)
+			return code.IsGoVersion(pass, 8)
 		}
 		return false
 	case *types.Struct:
 		n := typ.NumFields()
 		for i := 0; i < n; i++ {
-			if !validEncodingBinaryType(j, typ.Field(i).Type()) {
+			if !validEncodingBinaryType(pass, typ.Field(i).Type()) {
 				return false
 			}
 		}
 		return true
 	case *types.Array:
-		return validEncodingBinaryType(j, typ.Elem())
+		return validEncodingBinaryType(pass, typ.Elem())
 	case *types.Interface:
 		// we can't determine if it's a valid type or not
 		return true
@@ -213,7 +205,7 @@ func validEncodingBinaryType(j *lint.Job, typ types.Type) bool {
 	return false
 }
 
-func CanBinaryMarshal(j *lint.Job, v Value) bool {
+func CanBinaryMarshal(pass *analysis.Pass, v Value) bool {
 	typ := v.Value.Type().Underlying()
 	if ttyp, ok := typ.(*types.Pointer); ok {
 		typ = ttyp.Elem().Underlying()
@@ -226,14 +218,16 @@ func CanBinaryMarshal(j *lint.Job, v Value) bool {
 		}
 	}
 
-	return validEncodingBinaryType(j, typ)
+	return validEncodingBinaryType(pass, typ)
 }
 
 func RepeatZeroTimes(name string, arg int) CallCheck {
 	return func(call *Call) {
 		arg := call.Args[arg]
-		if IntValue(arg.Value, vrp.NewZ(0)) {
-			arg.Invalid(fmt.Sprintf("calling %s with n == 0 will return no results, did you mean -1?", name))
+		if k, ok := arg.Value.Value.(*ir.Const); ok && k.Value.Kind() == constant.Int {
+			if v, ok := constant.Int64Val(k.Value); ok && v == 0 {
+				arg.Invalid(fmt.Sprintf("calling %s with n == 0 will return no results, did you mean -1?", name))
+			}
 		}
 	}
 }
@@ -293,8 +287,8 @@ func ValidHostPort(v Value) bool {
 
 // ConvertedFrom reports whether value v was converted from type typ.
 func ConvertedFrom(v Value, typ string) bool {
-	change, ok := v.Value.(*ssa.ChangeType)
-	return ok && types.TypeString(change.X.Type(), nil) == typ
+	change, ok := v.Value.(*ir.ChangeType)
+	return ok && code.IsType(change.X.Type(), typ)
 }
 
 func UniqueStringCutset(v Value) bool {

@@ -1,10 +1,10 @@
 package functions
 
-import "honnef.co/go/tools/ssa"
+import "honnef.co/go/tools/ir"
 
-type Loop map[*ssa.BasicBlock]bool
+type Loop struct{ *ir.BlockSet }
 
-func findLoops(fn *ssa.Function) []Loop {
+func FindLoops(fn *ir.Function) []Loop {
 	if fn.Blocks == nil {
 		return nil
 	}
@@ -18,12 +18,16 @@ func findLoops(fn *ssa.Function) []Loop {
 			// n is a back-edge to h
 			// h is the loop header
 			if n == h {
-				sets = append(sets, Loop{n: true})
+				set := Loop{ir.NewBlockSet(len(fn.Blocks))}
+				set.Add(n)
+				sets = append(sets, set)
 				continue
 			}
-			set := Loop{h: true, n: true}
+			set := Loop{ir.NewBlockSet(len(fn.Blocks))}
+			set.Add(h)
+			set.Add(n)
 			for _, b := range allPredsBut(n, h, nil) {
-				set[b] = true
+				set.Add(b)
 			}
 			sets = append(sets, set)
 		}
@@ -31,7 +35,7 @@ func findLoops(fn *ssa.Function) []Loop {
 	return sets
 }
 
-func allPredsBut(b, but *ssa.BasicBlock, list []*ssa.BasicBlock) []*ssa.BasicBlock {
+func allPredsBut(b, but *ir.BasicBlock, list []*ir.BasicBlock) []*ir.BasicBlock {
 outer:
 	for _, pred := range b.Preds {
 		if pred == but {
