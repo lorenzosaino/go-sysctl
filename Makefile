@@ -1,4 +1,4 @@
-.PHONY: all fmt-check lint vet staticcheck test container-shell container-test
+SHELL = /bin/bash -euo pipefail
 
 GO ?= go
 
@@ -8,7 +8,9 @@ CONTAINER = golang:$(GO_VERSION)
 PKG = github.com/lorenzosaino/go-sysctl
 DOCKER_RUN_FLAGS = --rm -it -v $$(pwd):/go/src/$(PKG) -w /go/src/$(PKG)
 
-PKGS = $(shell go list ./... | grep -v '/vendor/')
+export GO111MODULE=on
+
+.PHONY: all fmt-check lint vet staticcheck test container-shell container-test
 
 all: fmt-check lint vet staticcheck test
 
@@ -25,7 +27,7 @@ staticcheck:
 
 lint:
 	[ -x "$(shell which golint)" ] || $(GO) install ./vendor/golang.org/x/lint/golint 2>/dev/null || $(GO) get -u golang.org/x/lint/golint
-	# We need to explicitly exclude ./vendor becuase of https://github.com/golang/lint/issues/320
+	# We need to explicitly exclude ./vendor because of https://github.com/golang/lint/issues/320
 	golint -set_exit_status $(shell $(GO)  list ./... | grep -v '/vendor/')
 
 test:
