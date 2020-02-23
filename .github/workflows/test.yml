@@ -1,0 +1,29 @@
+on: [push, pull_request]
+name: Test
+jobs:
+  test:
+    strategy:
+      matrix:
+        go-version: [1.13.x]
+        platform: [ubuntu-latest]
+    runs-on: ${{ matrix.platform }}
+    steps:
+    - name: Install Go
+      uses: actions/setup-go@v1
+      with:
+        go-version: ${{ matrix.go-version }}
+    - name: Checkout code
+      uses: actions/checkout@v2
+      # The following step is needed until https://github.com/actions/setup-go/issues/27 is fixed
+    - name: Add Go binaries to the path
+      run: echo "::add-path::`go env GOPATH`/bin"
+    - name: Check go fmt compliance
+      run: make fmt-check
+    - name: Run go lint
+      run: make fmt-check
+    - name: Run go vet
+      run: make vet
+    - name: Run staticcheck
+      run: make staticcheck
+    - name: Run tests
+      run: make test
