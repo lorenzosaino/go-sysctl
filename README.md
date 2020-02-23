@@ -1,6 +1,6 @@
 # Go Sysctl
 
-[![GoDoc](https://godoc.org/github.com/lorenzosaino/go-sysctl?status.svg)](https://godoc.org/github.com/lorenzosaino/go-sysctl)
+[![GoDoc](https://img.shields.io/static/v1?label=godoc&message=reference&color=blue)](https://pkg.go.dev/github.com/lorenzosaino/go-sysctl)
 [![Build](https://github.com/lorenzosaino/go-sysctl/workflows/Build/badge.svg)](https://github.com/lorenzosaino/go-sysctl/actions)
 [![Go Report Card](https://goreportcard.com/badge/github.com/lorenzosaino/go-sysctl)](https://goreportcard.com/report/github.com/lorenzosaino/go-sysctl)
 [![License](https://img.shields.io/github/license/lorenzosaino/go-sysctl.svg)](https://github.com/lorenzosaino/go-sysctl/blob/master/LICENSE)
