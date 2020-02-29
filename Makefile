@@ -10,13 +10,27 @@ DOCKER_RUN_FLAGS = --rm -it -v $$(pwd):/go/src/$(PKG) -w /go/src/$(PKG)
 
 export GO111MODULE=on
 
-.PHONY: all fmt-check lint vet staticcheck test container-shell container-test
+.PHONY: all mod-upgrade mod-update fmt-check lint vet staticcheck test container-shell container-test
 
 all: fmt-check lint vet staticcheck test
+
+mod-upgrade:
+	$(GO) get -u -t ./...
+	$(GO) mod tidy
+	$(GO) mod vendor
+
+mod-update:
+	$(GO) mod tidy
+	$(GO) mod vendor
 
 # Ensure that all source files pass "go fmt"
 fmt-check:
 	exit $(shell $(GO) fmt ./... | wc -l)
+
+lint:
+	[ -x "$(shell which golint)" ] || $(GO) install ./vendor/golang.org/x/lint/golint 2>/dev/null || $(GO) get -u golang.org/x/lint/golint
+	# We need to explicitly exclude ./vendor because of https://github.com/golang/lint/issues/320
+	golint -set_exit_status $(shell $(GO)  list ./... | grep -v '/vendor/')
 
 vet:
 	$(GO) vet ./...
@@ -24,11 +38,6 @@ vet:
 staticcheck:
 	[ -x "$(shell which staticcheck)" ] || $(GO) install ./vendor/honnef.co/go/tools/cmd/staticcheck 2>/dev/null || $(GO) get -u honnef.co/go/tools/cmd/staticcheck
 	staticcheck ./...
-
-lint:
-	[ -x "$(shell which golint)" ] || $(GO) install ./vendor/golang.org/x/lint/golint 2>/dev/null || $(GO) get -u golang.org/x/lint/golint
-	# We need to explicitly exclude ./vendor because of https://github.com/golang/lint/issues/320
-	golint -set_exit_status $(shell $(GO)  list ./... | grep -v '/vendor/')
 
 test:
 	$(GO) test -v ./...
