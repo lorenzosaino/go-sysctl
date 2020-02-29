@@ -5,11 +5,11 @@
 [![Go Report Card](https://goreportcard.com/badge/github.com/lorenzosaino/go-sysctl)](https://goreportcard.com/report/github.com/lorenzosaino/go-sysctl)
 [![License](https://img.shields.io/github/license/lorenzosaino/go-sysctl.svg)](https://github.com/lorenzosaino/go-sysctl/blob/master/LICENSE)
 
-Golang wrapper around the sysctl interface.
+Go wrapper around the sysctl interface.
 
 ## Documentation
 
-See [Go doc](https://godoc.org/github.com/lorenzosaino/go-sysctl).
+See [Go doc](https://pkg.go.dev/github.com/lorenzosaino/go-sysctl?tab=doc).
 
 ## Example
 
