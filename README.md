@@ -11,18 +11,24 @@ Go wrapper around the sysctl interface.
 
 See [Go doc](https://pkg.go.dev/github.com/lorenzosaino/go-sysctl?tab=doc).
 
-## Example
+## Usage
 
 ```go
 import sysctl "github.com/lorenzosaino/go-sysctl"
 
+var (
+    val string
+    vals map[string]string
+    err error
+)
+
 // Get value of a single sysctl
 // This is equivalent to running "sysctl <key>"
-val, err := sysctl.Get("net.ipv4.ip_forward")
+val, err = sysctl.Get("net.ipv4.ip_forward")
 
 // Get the values of all sysctls matching a given pattern
 // This is equivalent to running "sysctl -a -r <pattern>"
-vals, err := sysctl.GetPattern("net.ipv4.ipfrag")
+vals, err = sysctl.GetPattern("net.ipv4.ipfrag")
 
 // Get the values of all sysctls
 // This is equivalent to running "sysctl -a"
@@ -36,3 +42,7 @@ err = sysctl.Set("net.ipv4.ip_forward", "1")
 // This is equivalent to running "sysctl -p <config-file>"
 err = sysctl.LoadConfigAndApply("/etc/sysctl.conf")
 ```
+
+## License
+
+[BSD 3-clause](LICENSE)
