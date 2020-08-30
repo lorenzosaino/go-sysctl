@@ -21,7 +21,7 @@ jobs:
     - name: Check go fmt compliance
       run: make fmt-check
     - name: Run go lint
-      run: make fmt-check
+      run: make lint
     - name: Run go vet
       run: make vet
     - name: Run staticcheck
