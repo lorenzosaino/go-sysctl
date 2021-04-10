@@ -10,14 +10,14 @@ import (
 	"strings"
 )
 
-const sysctlBase = "/proc/sys/"
+var SysctlBase = "/proc/sys/"
 
 func pathFromKey(key string) string {
-	return filepath.Join(sysctlBase, strings.Replace(key, ".", "/", -1))
+	return filepath.Join(SysctlBase, strings.Replace(key, ".", "/", -1))
 }
 
 func keyFromPath(path string) string {
-	subPath := strings.TrimPrefix(path, sysctlBase)
+	subPath := strings.TrimPrefix(path, SysctlBase)
 	return strings.Replace(subPath, "/", ".", -1)
 }
 
@@ -57,7 +57,7 @@ func GetPattern(pattern string) (map[string]string, error) {
 		return nil, fmt.Errorf("invalid pattern: %s", err.Error())
 	}
 	res := make(map[string]string)
-	err = filepath.Walk(sysctlBase, func(path string, info os.FileInfo, err error) error {
+	err = filepath.Walk(SysctlBase, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
 			return fmt.Errorf("error accessing sysctl path: %s", err.Error())
 		}
