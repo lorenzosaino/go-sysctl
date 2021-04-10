@@ -10,6 +10,7 @@ import (
 	"strings"
 )
 
+// SysctlBase is a path of directory with sysctl parameters
 var SysctlBase = "/proc/sys/"
 
 func pathFromKey(key string) string {
