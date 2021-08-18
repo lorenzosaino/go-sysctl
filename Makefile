@@ -15,7 +15,7 @@ export GO111MODULE=on
 all: fmt-check lint vet staticcheck test
 
 mod-upgrade:
-	$(GO) get -u -t ./...
+	$(GO) get -d -u -t ./...
 	$(GO) mod tidy
 	$(GO) mod vendor
 
