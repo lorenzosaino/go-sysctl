@@ -105,3 +105,19 @@ func (c *Client) GetAll() (map[string]string, error) {
 func (c *Client) Set(key, value string) error {
 	return writeFile(c.pathFromKey(key), value)
 }
+
+// LoadConfigAndApply sets sysctl values from a list of sysctl configuration files.
+// The values in the rightmost files take priority.
+// If no file is specified, values are read from /etc/sysctl.conf.
+func (c *Client) LoadConfigAndApply(files ...string) error {
+	config, err := LoadConfig(files...)
+	if err != nil {
+		return fmt.Errorf("could not read configuration from files: %v", err)
+	}
+	for k, v := range config {
+		if err := c.Set(k, v); err != nil {
+			return fmt.Errorf("could not set %s = %s: %v", k, v, err)
+		}
+	}
+	return nil
+}

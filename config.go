@@ -57,19 +57,3 @@ func LoadConfig(files ...string) (map[string]string, error) {
 	}
 	return out, nil
 }
-
-// LoadConfigAndApply sets sysctl values from a list of sysctl configuration files.
-// The values in the rightmost files take priority.
-// If no file is specified, values are read from /etc/sysctl.conf.
-func LoadConfigAndApply(files ...string) error {
-	config, err := LoadConfig(files...)
-	if err != nil {
-		return fmt.Errorf("could not read configuration from files: %v", err)
-	}
-	for k, v := range config {
-		if err := Set(k, v); err != nil {
-			return fmt.Errorf("could not set %s = %s: %v", k, v, err)
-		}
-	}
-	return nil
-}

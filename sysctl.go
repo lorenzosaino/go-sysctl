@@ -33,3 +33,10 @@ func GetAll() (map[string]string, error) {
 func Set(key, value string) error {
 	return std.Set(key, value)
 }
+
+// LoadConfigAndApply sets sysctl values from a list of sysctl configuration files.
+// The values in the rightmost files take priority.
+// If no file is specified, values are read from /etc/sysctl.conf.
+func LoadConfigAndApply(files ...string) error {
+	return std.LoadConfigAndApply(files...)
+}
