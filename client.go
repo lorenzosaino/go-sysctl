@@ -65,12 +65,12 @@ func (c *Client) Get(key string) (string, error) {
 func (c *Client) GetPattern(pattern string) (map[string]string, error) {
 	re, err := regexp.CompilePOSIX(pattern)
 	if err != nil {
-		return nil, fmt.Errorf("invalid pattern: %s", err.Error())
+		return nil, fmt.Errorf("invalid pattern: %v", err)
 	}
 	res := make(map[string]string)
 	err = filepath.Walk(c.path, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
-			return fmt.Errorf("error accessing sysctl path: %s", err.Error())
+			return fmt.Errorf("error accessing sysctl path: %v", err)
 		}
 		if info.IsDir() {
 			return nil
@@ -84,7 +84,7 @@ func (c *Client) GetPattern(pattern string) (map[string]string, error) {
 		}
 		val, err := readFile(path)
 		if err != nil {
-			return fmt.Errorf("error reading %s: %s", path, err.Error())
+			return fmt.Errorf("error reading %s: %v", path, err)
 		}
 		res[key] = val
 		return nil
