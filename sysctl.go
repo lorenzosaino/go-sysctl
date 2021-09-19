@@ -3,7 +3,6 @@ package sysctl
 
 import (
 	"fmt"
-	"io/ioutil"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -31,7 +30,7 @@ func isFileReadable(info os.FileInfo) bool {
 }
 
 func readFile(path string) (string, error) {
-	data, err := ioutil.ReadFile(path)
+	data, err := os.ReadFile(path)
 	if err != nil {
 		return "", err
 	}
@@ -39,7 +38,7 @@ func readFile(path string) (string, error) {
 }
 
 func writeFile(path, value string) error {
-	return ioutil.WriteFile(path, []byte(value), 0644)
+	return os.WriteFile(path, []byte(value), 0644)
 }
 
 // Get returns a sysctl from a given key.
