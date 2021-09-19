@@ -17,6 +17,20 @@ func isFileReadable(info os.FileInfo) bool {
 	return info.Mode()&(1<<2) != 0
 }
 
+func checkExistingDir(path string) error {
+	dir, err := os.Stat(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return fmt.Errorf("directory %s does not exist", path)
+		}
+		return fmt.Errorf("could not get file info on %s: %v", path, err)
+	}
+	if !dir.IsDir() {
+		return fmt.Errorf("path %s exists but it is not a directory", path)
+	}
+	return nil
+}
+
 func readFile(path string) (string, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -39,8 +53,14 @@ type Client struct {
 // By default this is DefaultPath, but there may be cases where you may want
 // to use a different path, e.g. for tests or if procfs path is mounted
 // to a different path.
-func NewClient(path string) *Client {
-	return &Client{path: path}
+func NewClient(path string) (*Client, error) {
+	if err := checkExistingDir(path); err != nil {
+		return nil, fmt.Errorf("could not create client: %v", err)
+	}
+	if !strings.HasSuffix(path, "/") {
+		path += "/"
+	}
+	return &Client{path: path}, nil
 }
 
 func (c *Client) pathFromKey(key string) string {

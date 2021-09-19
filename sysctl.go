@@ -7,7 +7,7 @@ const DefaultPath = "/proc/sys/"
 var std *Client
 
 func init() {
-	std = NewClient(DefaultPath)
+	std = &Client{path: DefaultPath}
 }
 
 // Get returns a sysctl from a given key.
