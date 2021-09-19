@@ -16,7 +16,7 @@ func Test_parseConfig(t *testing.T) {
 	}{
 		{
 			name: "ok",
-			path: "testdata/sysctl-correct.conf",
+			path: "testdata/config/sysctl-correct.conf",
 			ok:   true,
 			out: map[string]string{
 				"kernel.domainname": "example.com",
@@ -26,24 +26,24 @@ func Test_parseConfig(t *testing.T) {
 		},
 		{
 			name: "empty",
-			path: "testdata/sysctl-empty.conf",
+			path: "testdata/config/sysctl-empty.conf",
 			ok:   true,
 			out:  map[string]string{},
 		},
 		{
 			name: "only-comments",
-			path: "testdata/sysctl-only-comments.conf",
+			path: "testdata/config/sysctl-only-comments.conf",
 			ok:   true,
 			out:  map[string]string{},
 		},
 		{
 			name: "malformatted",
-			path: "testdata/sysctl-error.conf",
+			path: "testdata/config/sysctl-error.conf",
 			ok:   false,
 		},
 		{
 			name: "not-found",
-			path: "testdata/not-found",
+			path: "testdata/config/not-found",
 			ok:   false,
 		},
 	}
@@ -76,19 +76,15 @@ func TestLoadConfig(t *testing.T) {
 		out   map[string]string
 	}{
 		{
-			name: "empty",
-			ok:   false,
-		},
-		{
 			name:  "not-found",
-			paths: []string{"testdata/not-found"},
+			paths: []string{"testdata/config/not-found"},
 			ok:    false,
 		},
 		{
 			name: "ok",
 			paths: []string{
-				"testdata/sysctl-a.conf",
-				"testdata/sysctl-b.conf",
+				"testdata/config/sysctl-a.conf",
+				"testdata/config/sysctl-b.conf",
 			},
 			ok: true,
 			out: map[string]string{
