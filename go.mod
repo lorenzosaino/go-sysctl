@@ -1,6 +1,6 @@
 module github.com/lorenzosaino/go-sysctl
 
-go 1.16
+go 1.17
 
 require (
 	github.com/BurntSushi/toml v0.4.1 // indirect
@@ -10,3 +10,5 @@ require (
 	golang.org/x/tools v0.1.6 // indirect
 	honnef.co/go/tools v0.2.1
 )
+
+require golang.org/x/xerrors v0.0.0-20200804184101-5ec99f83aff1 // indirect

@@ -1,19 +1,19 @@
 # github.com/BurntSushi/toml v0.4.1
-## explicit
+## explicit; go 1.16
 github.com/BurntSushi/toml
 github.com/BurntSushi/toml/internal
 # golang.org/x/lint v0.0.0-20210508222113-6edffad5e616
-## explicit
+## explicit; go 1.11
 golang.org/x/lint
 golang.org/x/lint/golint
 # golang.org/x/mod v0.5.0
-## explicit
+## explicit; go 1.17
 golang.org/x/mod/semver
 # golang.org/x/sys v0.0.0-20210917161153-d61c044b1678
-## explicit
+## explicit; go 1.17
 golang.org/x/sys/execabs
 # golang.org/x/tools v0.1.6
-## explicit
+## explicit; go 1.17
 golang.org/x/tools/go/analysis
 golang.org/x/tools/go/analysis/passes/inspect
 golang.org/x/tools/go/ast/astutil
@@ -38,10 +38,11 @@ golang.org/x/tools/internal/packagesinternal
 golang.org/x/tools/internal/typeparams
 golang.org/x/tools/internal/typesinternal
 # golang.org/x/xerrors v0.0.0-20200804184101-5ec99f83aff1
+## explicit; go 1.11
 golang.org/x/xerrors
 golang.org/x/xerrors/internal
 # honnef.co/go/tools v0.2.1
-## explicit
+## explicit; go 1.14
 honnef.co/go/tools/analysis/code
 honnef.co/go/tools/analysis/edit
 honnef.co/go/tools/analysis/facts
