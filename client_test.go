@@ -30,11 +30,6 @@ func TestNewClient(t *testing.T) {
 			ok:   false,
 		},
 		{
-			name: "empty",
-			path: "testdata/client/empty",
-			ok:   true,
-		},
-		{
 			name: "ok",
 			path: "testdata/client/ok",
 			ok:   true,
@@ -120,9 +115,9 @@ func TestClientGet(t *testing.T) {
 		ok   bool
 	}{
 		{
-			name: "empty",
-			path: "testdata/client/empty",
-			key:  "mykey",
+			name: "missing key",
+			path: "testdata/client/nok",
+			key:  "missing",
 			ok:   false,
 		},
 		{
@@ -181,7 +176,6 @@ func TestClientGetPattern(t *testing.T) {
 	}{
 		{
 			name: "empty",
-			path: "testdata/client/empty",
 			res:  map[string]string{},
 			ok:   true,
 		},
@@ -221,7 +215,12 @@ func TestClientGetPattern(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			cl, err := NewClient(c.path)
+			path := c.path
+			if path == "" {
+				path = t.TempDir()
+				defer os.RemoveAll(path)
+			}
+			cl, err := NewClient(path)
 			if err != nil {
 				t.Fatalf("could not create client: %v", err)
 			}
@@ -275,19 +274,7 @@ func TestClientSet(t *testing.T) {
 			if path == "" {
 				path = t.TempDir()
 				defer os.RemoveAll(path)
-				for _, p := range c.create {
-					p := filepath.Join(path, p)
-					dir := filepath.Dir(p)
-					file := filepath.Base(p)
-					if err := os.MkdirAll(dir, os.ModePerm); err != nil {
-						t.Fatalf("could not create dir %s: %v", dir, err)
-					}
-					f, err := os.Create(file)
-					if err != nil {
-						t.Fatalf("could not create file %s: %v", file, err)
-					}
-					_ = f.Close()
-				}
+				createTestFiles(t, path, c.create)
 			}
 			cl, err := NewClient(path)
 			if err != nil {
@@ -316,5 +303,21 @@ func TestClientSet(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func createTestFiles(t *testing.T, base string, paths []string) {
+	t.Helper()
+	for _, p := range paths {
+		p := filepath.Join(base, p)
+		dir := filepath.Dir(p)
+		if err := os.MkdirAll(dir, os.ModePerm); err != nil {
+			t.Fatalf("could not create dir %s: %v", dir, err)
+		}
+		f, err := os.Create(p)
+		if err != nil {
+			t.Fatalf("could not create file %s: %v", p, err)
+		}
+		_ = f.Close()
 	}
 }
