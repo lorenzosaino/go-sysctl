@@ -9,10 +9,15 @@ package gcimporter
 
 import "go/types"
 
+const iexportVersion = iexportVersionGenerics
+
 // additionalPredeclared returns additional predeclared types in go.1.18.
 func additionalPredeclared() []types.Type {
 	return []types.Type{
 		// comparable
 		types.Universe.Lookup("comparable").Type(),
+
+		// any
+		types.Universe.Lookup("any").Type(),
 	}
 }

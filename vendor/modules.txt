@@ -13,13 +13,13 @@ github.com/google/go-cmp/cmp/internal/value
 ## explicit; go 1.11
 golang.org/x/lint
 golang.org/x/lint/golint
-# golang.org/x/mod v0.5.0
+# golang.org/x/mod v0.5.1
 ## explicit; go 1.17
 golang.org/x/mod/semver
-# golang.org/x/sys v0.0.0-20210917161153-d61c044b1678
+# golang.org/x/sys v0.0.0-20211204120058-94396e421777
 ## explicit; go 1.17
 golang.org/x/sys/execabs
-# golang.org/x/tools v0.1.6
+# golang.org/x/tools v0.1.8
 ## explicit; go 1.17
 golang.org/x/tools/go/analysis
 golang.org/x/tools/go/analysis/passes/inspect
@@ -48,7 +48,7 @@ golang.org/x/tools/internal/typesinternal
 ## explicit; go 1.11
 golang.org/x/xerrors
 golang.org/x/xerrors/internal
-# honnef.co/go/tools v0.2.1
+# honnef.co/go/tools v0.2.2
 ## explicit; go 1.14
 honnef.co/go/tools/analysis/code
 honnef.co/go/tools/analysis/edit
@@ -81,6 +81,9 @@ honnef.co/go/tools/quickfix
 honnef.co/go/tools/sarif
 honnef.co/go/tools/simple
 honnef.co/go/tools/staticcheck
+honnef.co/go/tools/staticcheck/fakejson
+honnef.co/go/tools/staticcheck/fakereflect
+honnef.co/go/tools/staticcheck/fakexml
 honnef.co/go/tools/stylecheck
 honnef.co/go/tools/unused
 honnef.co/go/tools/unused/typemap
