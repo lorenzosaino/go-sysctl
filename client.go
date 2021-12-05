@@ -40,7 +40,7 @@ func readFile(path string) (string, error) {
 }
 
 func writeFile(path, value string) error {
-	return os.WriteFile(path, []byte(value), 0644)
+	return os.WriteFile(path, []byte(value), 0o644)
 }
 
 // Client is a client for reading and writing sysctls
