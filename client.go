@@ -1,21 +1,13 @@
 package sysctl
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
 )
-
-func isFileReadable(info os.FileInfo) bool {
-	// other users have read permissions
-	// this is not completely accurate because
-	// we should also check if the UID or GID of
-	// the file match those of the current user
-	// and if group or user have read permissions
-	return info.Mode()&(1<<2) != 0
-}
 
 func checkExistingDir(path string) error {
 	dir, err := os.Stat(path)
@@ -98,11 +90,16 @@ func (c *Client) GetPattern(pattern string) (map[string]string, error) {
 		if !re.MatchString(key) {
 			return nil
 		}
-		if !isFileReadable(info) {
-			return nil
-		}
 		val, err := readFile(path)
 		if err != nil {
+			var pathError *os.PathError
+			if errors.As(err, &pathError) && pathError.Op == "open" {
+				// this occurs if the file is not readable,
+				// which should not be considered an error.
+				// Instead, we should silently skip sysctls
+				// we have no permissions to read.
+				return nil
+			}
 			return fmt.Errorf("error reading %s: %v", path, err)
 		}
 		res[key] = val

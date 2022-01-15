@@ -8,36 +8,66 @@ import (
 )
 
 func TestGet(t *testing.T) {
-	got, err := Get("net.ipv4.ip_forward")
-	if err != nil {
-		t.Fatalf("Could not get sysctl value: %s", err.Error())
+	cases := []struct {
+		name string
+	}{
+		{"fs.protected_fifos"},
+		{"net.ipv4.ip_forward"},
 	}
-	if got != "0" && got != "1" {
-		t.Fatalf("expected 0 or 1, got %s", got)
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got, err := Get(c.name)
+			if err != nil {
+				t.Fatalf("Could not get sysctl value: %s", err.Error())
+			}
+			if got != "0" && got != "1" {
+				t.Fatalf("expected 0 or 1, got %s", got)
+			}
+		})
 	}
 }
 
 func TestGetPattern(t *testing.T) {
-	pattern := "^net.ipv4.ipfrag"
-	expected := []string{
-		"net.ipv4.ipfrag_high_thresh",
-		"net.ipv4.ipfrag_low_thresh",
-		"net.ipv4.ipfrag_max_dist",
-		"net.ipv4.ipfrag_time",
+	cases := []struct {
+		pattern string
+		matches []string
+	}{
+		{
+			pattern: "^fs.protected_",
+			matches: []string{
+				"fs.protected_fifos",
+				"fs.protected_hardlinks",
+				"fs.protected_regular",
+				"fs.protected_symlinks",
+			},
+		},
+		{
+			pattern: "^net.ipv4.ipfrag",
+			matches: []string{
+				"net.ipv4.ipfrag_high_thresh",
+				"net.ipv4.ipfrag_low_thresh",
+				"net.ipv4.ipfrag_max_dist",
+				"net.ipv4.ipfrag_time",
+			},
+		},
 	}
-	got, err := GetPattern(pattern)
-	if err != nil {
-		t.Fatalf("could not get sysctl values for pattern %s: %v", pattern, err)
-	}
-	if len(got) < len(expected) {
-		// We check if length is < than expected to prevent
-		// breaking test cases if new sysctls are added
-		t.Fatalf("expected at least %d matches, got %d. Matches: %+v",
-			len(expected), len(got), got)
-	}
-	for _, k := range expected {
-		if _, ok := got[k]; !ok {
-			t.Fatalf("key %s not matched. Matches: %+v", k, got)
-		}
+	for _, c := range cases {
+		t.Run(c.pattern, func(t *testing.T) {
+			got, err := GetPattern(c.pattern)
+			if err != nil {
+				t.Fatalf("could not get sysctl values for pattern %s: %v", c.pattern, err)
+			}
+			if len(got) < len(c.matches) {
+				// We check if length is < than expected to prevent
+				// breaking test cases if new sysctls are added
+				t.Fatalf("expected at least %d matches, got %d. Matches: %+v",
+					len(c.matches), len(got), got)
+			}
+			for _, k := range c.matches {
+				if _, ok := got[k]; !ok {
+					t.Fatalf("key %s not matched. Matches: %+v", k, got)
+				}
+			}
+		})
 	}
 }
