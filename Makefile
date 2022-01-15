@@ -28,15 +28,15 @@ fmt-check:
 	exit $(shell $(GO) fmt ./... | wc -l)
 
 lint:
-	[ -x "$(shell which golint)" ] || $(GO) install ./vendor/golang.org/x/lint/golint 2>/dev/null || $(GO) get -u golang.org/x/lint/golint
-	# We need to explicitly exclude ./vendor because of https://github.com/golang/lint/issues/320
+	@[ -x "$(shell which golint)" ] || $(GO) install ./vendor/golang.org/x/lint/golint 2>/dev/null || $(GO) get -u golang.org/x/lint/golint
+	@# We need to explicitly exclude ./vendor because of https://github.com/golang/lint/issues/320
 	golint -set_exit_status $(shell $(GO)  list ./... | grep -v '/vendor/')
 
 vet:
 	$(GO) vet ./...
 
 staticcheck:
-	[ -x "$(shell which staticcheck)" ] || $(GO) install ./vendor/honnef.co/go/tools/cmd/staticcheck 2>/dev/null || $(GO) get -u honnef.co/go/tools/cmd/staticcheck
+	@[ -x "$(shell which staticcheck)" ] || $(GO) install ./vendor/honnef.co/go/tools/cmd/staticcheck 2>/dev/null || $(GO) get -u honnef.co/go/tools/cmd/staticcheck
 	staticcheck ./...
 
 test:
