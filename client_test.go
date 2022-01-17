@@ -242,6 +242,59 @@ func TestClientGetPattern(t *testing.T) {
 	}
 }
 
+func TestClientGetAll(t *testing.T) {
+	cases := []struct {
+		name string
+		path string
+		res  map[string]string
+		ok   bool
+	}{
+		{
+			name: "empty",
+			res:  map[string]string{},
+			ok:   true,
+		},
+		{
+			name: "testdata/client/ok/",
+			path: "testdata/client/ok/",
+			res: map[string]string{
+				"f":      "value of f",
+				"d.f":    "value of d.f",
+				"d.d.f1": "value of d.d.f1",
+				"d.d.f2": "value of d.d.f2",
+			},
+			ok: true,
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			path := c.path
+			if path == "" {
+				path = t.TempDir()
+				defer os.RemoveAll(path)
+			}
+			cl, err := NewClient(path)
+			if err != nil {
+				t.Fatalf("could not create client: %v", err)
+			}
+			got, err := cl.GetAll()
+			if c.ok && err != nil {
+				t.Fatalf("error parsing: %v", err)
+			}
+			if !c.ok && err == nil {
+				t.Fatal("expected error but it succeeded")
+			}
+			if err != nil {
+				t.Logf("err: %v", err)
+				return
+			}
+			if diff := cmp.Diff(c.res, got); diff != "" {
+				t.Fatalf("unexpected output (-want +got):\n%s", diff)
+			}
+		})
+	}
+}
+
 func TestClientSet(t *testing.T) {
 	cases := []struct {
 		name   string
