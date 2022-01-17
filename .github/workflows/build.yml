@@ -1,9 +1,9 @@
 name: Build
 on:
-    push:
-    pull_request:
-    schedule:
-    - cron: 0 3 * * 6  # Every Saturday at 3:00 AM
+  push:
+  pull_request:
+  schedule:
+  - cron: 0 3 * * 6  # Every Saturday at 3:00 AM
 jobs:
   test:
     strategy:
