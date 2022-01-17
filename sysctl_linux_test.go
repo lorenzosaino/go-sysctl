@@ -4,18 +4,29 @@
 package sysctl
 
 import (
+	"os/user"
 	"testing"
 )
 
 func TestGet(t *testing.T) {
 	cases := []struct {
 		name string
+		skip bool
 	}{
-		{"fs.protected_fifos"},
-		{"net.ipv4.ip_forward"},
+		{
+			name: "fs.protected_fifos",
+			skip: !isUserRoot(),
+		},
+		{
+			name: "net.ipv4.ip_forward",
+		},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
+			if c.skip {
+				t.Skip("skipping test")
+			}
+
 			got, err := Get(c.name)
 			if err != nil {
 				t.Fatalf("Could not get sysctl value: %s", err.Error())
@@ -31,6 +42,7 @@ func TestGetPattern(t *testing.T) {
 	cases := []struct {
 		pattern string
 		matches []string
+		skip    bool
 	}{
 		{
 			pattern: "^fs.protected_",
@@ -40,6 +52,7 @@ func TestGetPattern(t *testing.T) {
 				"fs.protected_regular",
 				"fs.protected_symlinks",
 			},
+			skip: !isUserRoot(),
 		},
 		{
 			pattern: "^net.ipv4.ipfrag",
@@ -53,6 +66,10 @@ func TestGetPattern(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.pattern, func(t *testing.T) {
+			if c.skip {
+				t.Skip("skipping test")
+			}
+
 			got, err := GetPattern(c.pattern)
 			if err != nil {
 				t.Fatalf("could not get sysctl values for pattern %s: %v", c.pattern, err)
@@ -70,4 +87,12 @@ func TestGetPattern(t *testing.T) {
 			}
 		})
 	}
+}
+
+func isUserRoot() bool {
+	u, err := user.Current()
+	if err != nil {
+		return false
+	}
+	return u.Username == "root"
 }
