@@ -180,6 +180,10 @@ func TestClientGetPattern(t *testing.T) {
 			ok:   true,
 		},
 		{
+			name:    "invalid pattern",
+			pattern: "[[",
+		},
+		{
 			name:    "match all",
 			path:    "testdata/client/ok/",
 			pattern: "",
@@ -297,15 +301,18 @@ func TestClientGetAll(t *testing.T) {
 
 func TestClientSet(t *testing.T) {
 	cases := []struct {
-		name   string
-		path   string
-		create []string
-		keys   map[string]string
-		ok     bool
+		name  string
+		files []string
+		keys  map[string]string
+		ok    bool
 	}{
 		{
+			name: "empty",
+			ok:   true,
+		},
+		{
 			name: "ok",
-			create: []string{
+			files: []string{
 				"a",
 				"b/a",
 				"b/b/a",
@@ -320,15 +327,11 @@ func TestClientSet(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			if c.path != "" && len(c.create) > 0 {
-				t.Fatal("can create files only in temporary test dirs, do not set path and create simultaneously")
-			}
-			path := c.path
-			if path == "" {
-				path = t.TempDir()
-				defer os.RemoveAll(path)
-				createTestFiles(t, path, c.create)
-			}
+
+			path := t.TempDir()
+			defer os.RemoveAll(path)
+			createTestFiles(t, path, c.files)
+
 			cl, err := NewClient(path)
 			if err != nil {
 				t.Fatalf("could not create client: %v", err)
@@ -347,6 +350,85 @@ func TestClientSet(t *testing.T) {
 				}
 			}
 			for k, v := range c.keys {
+				got, err := cl.Get(k)
+				if err != nil {
+					t.Fatalf("could not get key %s: %v", k, err)
+				}
+				if got != v {
+					t.Fatalf("got wrong value for key %s: expected: %s, got %s", k, v, got)
+				}
+			}
+		})
+	}
+}
+
+func TestClientLoadConfigAndApply(t *testing.T) {
+	cases := []struct {
+		name     string
+		files    []string
+		config   string
+		expected map[string]string
+		ok       bool
+	}{
+		{
+			name:   "empty",
+			config: "testdata/client/config-empty.conf",
+			ok:     true,
+		},
+		{
+			name:   "ok",
+			config: "testdata/client/config-ok.conf",
+			files: []string{
+				"a",
+				"b/a",
+				"b/b/a",
+			},
+			expected: map[string]string{
+				"a":     "value of a",
+				"b.a":   "value of b.a",
+				"b.b.a": "value of b.b.a",
+			},
+			ok: true,
+		},
+		{
+			name:   "missing config file",
+			config: "testdata/client/missing-config-file.conf",
+		},
+		{
+			name:   "missing keys",
+			config: "testdata/client/config-missing-keys.conf",
+			files: []string{
+				"a",
+				"b/a",
+				"b/b/a",
+			},
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+
+			path := t.TempDir()
+			defer os.RemoveAll(path)
+			createTestFiles(t, path, c.files)
+
+			cl, err := NewClient(path)
+			if err != nil {
+				t.Fatalf("could not create client: %v", err)
+			}
+
+			err = cl.LoadConfigAndApply(c.config)
+			if c.ok && err != nil {
+				t.Fatalf("could not load and apply config: %s", err)
+			}
+			if !c.ok && err == nil {
+				t.Fatal("expected error but it succeeded")
+			}
+			if err != nil {
+				t.Logf("err: %v", err)
+				return
+			}
+
+			for k, v := range c.expected {
 				got, err := cl.Get(k)
 				if err != nil {
 					t.Fatalf("could not get key %s: %v", k, err)
