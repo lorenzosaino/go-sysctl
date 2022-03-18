@@ -377,13 +377,13 @@ const (
 type functionBody struct {
 	// The following fields are set transiently during building,
 	// then cleared.
-	currentBlock    *BasicBlock             // where to emit code
-	objects         map[types.Object]Value  // addresses of local variables
-	namedResults    []*Alloc                // tuple of named results
-	implicitResults []*Alloc                // tuple of results
-	targets         *targets                // linked stack of branch targets
-	lblocks         map[*ast.Object]*lblock // labelled blocks
-	consts          []*Const
+	currentBlock    *BasicBlock              // where to emit code
+	objects         map[types.Object]Value   // addresses of local variables
+	namedResults    []*Alloc                 // tuple of named results
+	implicitResults []*Alloc                 // tuple of results
+	targets         *targets                 // linked stack of branch targets
+	lblocks         map[types.Object]*lblock // labelled blocks
+	consts          []Constant
 	wr              *HTMLWriter
 	fakeExits       BlockSet
 	blocksets       [5]BlockSet
@@ -501,6 +501,28 @@ type Const struct {
 	Value constant.Value
 }
 
+type AggregateConst struct {
+	register
+
+	Values []Constant
+}
+
+type ArrayConst struct {
+	register
+}
+
+type Constant interface {
+	Instruction
+	Value
+	aConstant()
+	RelString(*types.Package) string
+	equal(Constant) bool
+}
+
+func (*Const) aConstant()          {}
+func (*AggregateConst) aConstant() {}
+func (*ArrayConst) aConstant()     {}
+
 // A Global is a named Value holding the address of a package-level
 // variable.
 //
@@ -608,6 +630,24 @@ type Sigma struct {
 	X    Value
 
 	live bool // used during lifting
+}
+
+type CopyInfo uint64
+
+const (
+	CopyInfoUnspecified CopyInfo = 0
+	CopyInfoNotNil      CopyInfo = 1 << iota
+	CopyInfoNotZeroLength
+	CopyInfoNotNegative
+	CopyInfoSingleConcreteType
+	CopyInfoClosed
+)
+
+type Copy struct {
+	register
+	X    Value
+	Why  Instruction
+	Info CopyInfo
 }
 
 // The Phi instruction represents an SSA φ-node, which combines values
@@ -1754,6 +1794,10 @@ func (s *DebugRef) Operands(rands []*Value) []*Value {
 	return append(rands, &s.X)
 }
 
+func (s *Copy) Operands(rands []*Value) []*Value {
+	return append(rands, &s.X)
+}
+
 func (v *Extract) Operands(rands []*Value) []*Value {
 	return append(rands, &v.Tuple)
 }
@@ -1909,9 +1953,11 @@ func (v *Load) Operands(rands []*Value) []*Value {
 }
 
 // Non-Instruction Values:
-func (v *Builtin) Operands(rands []*Value) []*Value   { return rands }
-func (v *FreeVar) Operands(rands []*Value) []*Value   { return rands }
-func (v *Const) Operands(rands []*Value) []*Value     { return rands }
-func (v *Function) Operands(rands []*Value) []*Value  { return rands }
-func (v *Global) Operands(rands []*Value) []*Value    { return rands }
-func (v *Parameter) Operands(rands []*Value) []*Value { return rands }
+func (v *Builtin) Operands(rands []*Value) []*Value        { return rands }
+func (v *FreeVar) Operands(rands []*Value) []*Value        { return rands }
+func (v *Const) Operands(rands []*Value) []*Value          { return rands }
+func (v *ArrayConst) Operands(rands []*Value) []*Value     { return rands }
+func (v *AggregateConst) Operands(rands []*Value) []*Value { return rands }
+func (v *Function) Operands(rands []*Value) []*Value       { return rands }
+func (v *Global) Operands(rands []*Value) []*Value         { return rands }
+func (v *Parameter) Operands(rands []*Value) []*Value      { return rands }

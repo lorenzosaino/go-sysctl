@@ -1,4 +1,3 @@
-// Package simple contains a linter for Go source code.
 package simple
 
 import (
@@ -61,47 +60,147 @@ var (
 	checkLoopCopyQ = pattern.MustParse(`
 		(Or
 			(RangeStmt
-				key value ":=" src@(Ident _)
-				[(AssignStmt
-					(IndexExpr dst@(Ident _) key)
-					"="
-					value)])
+				key@(Ident _) value@(Ident _) ":=" src
+				[(AssignStmt (IndexExpr dst key) "=" value)])
 			(RangeStmt
-				key nil ":=" src@(Ident _)
-				[(AssignStmt
-					(IndexExpr dst@(Ident _) key)
-					"="
-					(IndexExpr src key))]))`)
-	checkLoopCopyR = pattern.MustParse(`(CallExpr (Ident "copy") [dst src])`)
+				key@(Ident _) nil ":=" src
+				[(AssignStmt (IndexExpr dst key) "=" (IndexExpr src key))])
+			(ForStmt
+				(AssignStmt key@(Ident _) ":=" (IntegerLiteral "0"))
+				(BinaryExpr key "<" (CallExpr (Function "len") [src]))
+				(IncDecStmt key "++")
+				[(AssignStmt (IndexExpr dst key) "=" (IndexExpr src key))]))`)
 )
 
 func CheckLoopCopy(pass *analysis.Pass) (interface{}, error) {
+	isInvariant := func(k, v types.Object, node ast.Expr) bool {
+		if code.MayHaveSideEffects(pass, node, nil) {
+			return false
+		}
+		invariant := true
+		ast.Inspect(node, func(node ast.Node) bool {
+			if node, ok := node.(*ast.Ident); ok {
+				obj := pass.TypesInfo.ObjectOf(node)
+				if obj == k || obj == v {
+					// don't allow loop bodies like 'a[i][i] = v'
+					invariant = false
+					return false
+				}
+			}
+			return true
+		})
+		return invariant
+	}
+
+	var elType func(T types.Type) (el types.Type, isArray bool, isArrayPointer bool, ok bool)
+	elType = func(T types.Type) (el types.Type, isArray bool, isArrayPointer bool, ok bool) {
+		switch typ := T.Underlying().(type) {
+		case *types.Slice:
+			return typ.Elem(), false, false, true
+		case *types.Array:
+			return typ.Elem(), true, false, true
+		case *types.Pointer:
+			el, isArray, _, ok = elType(typ.Elem())
+			return el, isArray, true, ok
+		default:
+			return nil, false, false, false
+		}
+	}
+
 	fn := func(node ast.Node) {
-		m, edits, ok := code.MatchAndEdit(pass, checkLoopCopyQ, checkLoopCopyR, node)
+		m, ok := code.Match(pass, checkLoopCopyQ, node)
 		if !ok {
 			return
 		}
-		t1 := pass.TypesInfo.TypeOf(m.State["src"].(*ast.Ident))
-		t2 := pass.TypesInfo.TypeOf(m.State["dst"].(*ast.Ident))
-		if _, ok := t1.Underlying().(*types.Slice); !ok {
+
+		src := m.State["src"].(ast.Expr)
+		dst := m.State["dst"].(ast.Expr)
+
+		k := pass.TypesInfo.ObjectOf(m.State["key"].(*ast.Ident))
+		var v types.Object
+		if value, ok := m.State["value"]; ok {
+			v = pass.TypesInfo.ObjectOf(value.(*ast.Ident))
+		}
+		if !isInvariant(k, v, dst) {
 			return
 		}
-		if !types.Identical(t1, t2) {
+		if !isInvariant(k, v, src) {
+			// For example: 'for i := range foo()'
 			return
 		}
 
-		tv, err := types.Eval(pass.Fset, pass.Pkg, node.Pos(), "copy")
-		if err == nil && tv.IsBuiltin() {
-			report.Report(pass, node,
-				"should use copy() instead of a loop",
+		Tsrc := pass.TypesInfo.TypeOf(src)
+		Tdst := pass.TypesInfo.TypeOf(dst)
+		TsrcElem, TsrcArray, TsrcPointer, ok := elType(Tsrc)
+		if !ok {
+			return
+		}
+		if TsrcPointer {
+			Tsrc = Tsrc.Underlying().(*types.Pointer).Elem()
+		}
+		TdstElem, TdstArray, TdstPointer, ok := elType(Tdst)
+		if !ok {
+			return
+		}
+		if TdstPointer {
+			Tdst = Tdst.Underlying().(*types.Pointer).Elem()
+		}
+
+		if !types.Identical(TsrcElem, TdstElem) {
+			return
+		}
+
+		if TsrcArray && TdstArray && types.Identical(Tsrc, Tdst) {
+			if TsrcPointer {
+				src = &ast.StarExpr{
+					X: src,
+				}
+			}
+			if TdstPointer {
+				dst = &ast.StarExpr{
+					X: dst,
+				}
+			}
+			r := &ast.AssignStmt{
+				Lhs: []ast.Expr{dst},
+				Rhs: []ast.Expr{src},
+				Tok: token.ASSIGN,
+			}
+
+			report.Report(pass, node, "should copy arrays using assignment instead of using a loop",
+				report.FilterGenerated(),
+				report.ShortRange(),
+				report.Fixes(edit.Fix("replace loop with assignment", edit.ReplaceWithNode(pass.Fset, node, r))))
+		} else {
+			opts := []report.Option{
 				report.ShortRange(),
 				report.FilterGenerated(),
-				report.Fixes(edit.Fix("replace loop with call to copy()", edits...)))
-		} else {
-			report.Report(pass, node, "should use copy() instead of a loop", report.FilterGenerated())
+			}
+			tv, err := types.Eval(pass.Fset, pass.Pkg, node.Pos(), "copy")
+			if err == nil && tv.IsBuiltin() {
+				src := m.State["src"].(ast.Expr)
+				if TsrcArray {
+					src = &ast.SliceExpr{
+						X: src,
+					}
+				}
+				dst := m.State["dst"].(ast.Expr)
+				if TdstArray {
+					dst = &ast.SliceExpr{
+						X: dst,
+					}
+				}
+
+				r := &ast.CallExpr{
+					Fun:  &ast.Ident{Name: "copy"},
+					Args: []ast.Expr{dst, src},
+				}
+				opts = append(opts, report.Fixes(edit.Fix("replace loop with call to copy()", edit.ReplaceWithNode(pass.Fset, node, r))))
+			}
+			report.Report(pass, node, "should use copy() instead of a loop", opts...)
 		}
 	}
-	code.Preorder(pass, fn, (*ast.RangeStmt)(nil))
+	code.Preorder(pass, fn, (*ast.ForStmt)(nil), (*ast.RangeStmt)(nil))
 	return nil, nil
 }
 
@@ -145,7 +244,7 @@ func CheckIfBoolCmp(pass *analysis.Pass) (interface{}, error) {
 		}
 		report.Report(pass, expr, fmt.Sprintf("should omit comparison to bool constant, can be simplified to %s", r),
 			report.FilterGenerated(),
-			report.Fixes(edit.Fix("simplify bool comparison", edit.ReplaceWithString(pass.Fset, expr, r))))
+			report.Fixes(edit.Fix("simplify bool comparison", edit.ReplaceWithString(expr, r))))
 	}
 	code.Preorder(pass, fn, (*ast.BinaryExpr)(nil))
 	return nil, nil
@@ -181,11 +280,11 @@ func CheckBytesBufferConversions(pass *analysis.Pass) (interface{}, error) {
 
 			report.Report(pass, call, fmt.Sprintf("should use %v.String() instead of %v", report.Render(pass, sel.X), report.Render(pass, call)),
 				report.FilterGenerated(),
-				report.Fixes(edit.Fix("simplify conversion", edit.ReplaceWithPattern(pass, checkBytesBufferConversionsRs, m.State, node))))
+				report.Fixes(edit.Fix("simplify conversion", edit.ReplaceWithPattern(pass.Fset, node, checkBytesBufferConversionsRs, m.State))))
 		} else if typ, ok := typ.(*types.Slice); ok && typ.Elem() == types.Universe.Lookup("byte").Type() && code.IsCallTo(pass, call.Args[0], "(*bytes.Buffer).String") {
 			report.Report(pass, call, fmt.Sprintf("should use %v.Bytes() instead of %v", report.Render(pass, sel.X), report.Render(pass, call)),
 				report.FilterGenerated(),
-				report.Fixes(edit.Fix("simplify conversion", edit.ReplaceWithPattern(pass, checkBytesBufferConversionsRb, m.State, node))))
+				report.Fixes(edit.Fix("simplify conversion", edit.ReplaceWithPattern(pass.Fset, node, checkBytesBufferConversionsRb, m.State))))
 		}
 
 	}
@@ -279,7 +378,7 @@ func CheckStringsContains(pass *analysis.Pass) (interface{}, error) {
 }
 
 var (
-	checkBytesCompareQ  = pattern.MustParse(`(BinaryExpr (CallExpr (Function "bytes.Compare") args) op@(Or "==" "!=") (BasicLit "INT" "0"))`)
+	checkBytesCompareQ  = pattern.MustParse(`(BinaryExpr (CallExpr (Function "bytes.Compare") args) op@(Or "==" "!=") (IntegerLiteral "0"))`)
 	checkBytesCompareRe = pattern.MustParse(`(CallExpr (SelectorExpr (Ident "bytes") (Ident "Equal")) args)`)
 	checkBytesCompareRn = pattern.MustParse(`(UnaryExpr "!" (CallExpr (SelectorExpr (Ident "bytes") (Ident "Equal")) args))`)
 )
@@ -304,9 +403,9 @@ func CheckBytesCompare(pass *analysis.Pass) (interface{}, error) {
 		var fix analysis.SuggestedFix
 		switch tok := m.State["op"].(token.Token); tok {
 		case token.EQL:
-			fix = edit.Fix("simplify use of bytes.Compare", edit.ReplaceWithPattern(pass, checkBytesCompareRe, m.State, node))
+			fix = edit.Fix("simplify use of bytes.Compare", edit.ReplaceWithPattern(pass.Fset, node, checkBytesCompareRe, m.State))
 		case token.NEQ:
-			fix = edit.Fix("simplify use of bytes.Compare", edit.ReplaceWithPattern(pass, checkBytesCompareRn, m.State, node))
+			fix = edit.Fix("simplify use of bytes.Compare", edit.ReplaceWithPattern(pass.Fset, node, checkBytesCompareRn, m.State))
 		default:
 			panic(fmt.Sprintf("unexpected token %v", tok))
 		}
@@ -387,8 +486,8 @@ func CheckRegexpRaw(pass *analysis.Pass) (interface{}, error) {
 }
 
 var (
-	checkIfReturnQIf  = pattern.MustParse(`(IfStmt nil cond [(ReturnStmt [ret@(Ident _)])] nil)`)
-	checkIfReturnQRet = pattern.MustParse(`(ReturnStmt [ret@(Ident _)])`)
+	checkIfReturnQIf  = pattern.MustParse(`(IfStmt nil cond [(ReturnStmt [ret@(Builtin (Or "true" "false"))])] nil)`)
+	checkIfReturnQRet = pattern.MustParse(`(ReturnStmt [ret@(Builtin (Or "true" "false"))])`)
 )
 
 func CheckIfReturn(pass *analysis.Pass) (interface{}, error) {
@@ -424,13 +523,7 @@ func CheckIfReturn(pass *analysis.Pass) (interface{}, error) {
 		}
 
 		ret1 := m1.State["ret"].(*ast.Ident)
-		if !code.IsBoolConst(pass, ret1) {
-			return
-		}
 		ret2 := m2.State["ret"].(*ast.Ident)
-		if !code.IsBoolConst(pass, ret2) {
-			return
-		}
 
 		if ret1.Name == ret2.Name {
 			// we want the function to return true and false, not the
@@ -507,7 +600,7 @@ func CheckRedundantNilCheckWithLen(pass *analysis.Pass) (interface{}, error) {
 	isConstZero := func(expr ast.Expr) (isConst bool, isZero bool) {
 		_, ok := expr.(*ast.BasicLit)
 		if ok {
-			return true, astutil.IsIntLiteral(expr, "0")
+			return true, code.IsIntegerLiteral(pass, expr, constant.MakeInt64(0))
 		}
 		id, ok := expr.(*ast.Ident)
 		if !ok {
@@ -571,7 +664,7 @@ func CheckRedundantNilCheckWithLen(pass *analysis.Pass) (interface{}, error) {
 			return
 		}
 
-		if eqNil && !astutil.IsIntLiteral(y.Y, "0") { // must be len(x) == *0*
+		if eqNil && !code.IsIntegerLiteral(pass, y.Y, constant.MakeInt64(0)) { // must be len(x) == *0*
 			return
 		}
 
@@ -1121,7 +1214,7 @@ func CheckTrim(pass *analysis.Pass) (interface{}, error) {
 var (
 	checkLoopSlideQ = pattern.MustParse(`
 		(ForStmt
-			(AssignStmt initvar@(Ident _) _ (BasicLit "INT" "0"))
+			(AssignStmt initvar@(Ident _) _ (IntegerLiteral "0"))
 			(BinaryExpr initvar "<" limit@(Ident _))
 			(IncDecStmt initvar "++")
 			[(AssignStmt
@@ -1161,7 +1254,7 @@ func CheckLoopSlide(pass *analysis.Pass) (interface{}, error) {
 }
 
 var (
-	checkMakeLenCapQ1 = pattern.MustParse(`(CallExpr (Builtin "make") [typ size@(BasicLit "INT" "0")])`)
+	checkMakeLenCapQ1 = pattern.MustParse(`(CallExpr (Builtin "make") [typ size@(IntegerLiteral "0")])`)
 	checkMakeLenCapQ2 = pattern.MustParse(`(CallExpr (Builtin "make") [typ size size])`)
 )
 
@@ -1726,7 +1819,7 @@ func CheckSimplifyTypeSwitch(pass *analysis.Pass) (interface{}, error) {
 				report.Render(pass, ident), report.Render(pass, ident))
 			if canSuggestFix {
 				var edits []analysis.TextEdit
-				edits = append(edits, edit.ReplaceWithPattern(pass, checkSimplifyTypeSwitchR, m.State, expr))
+				edits = append(edits, edit.ReplaceWithPattern(pass.Fset, expr, checkSimplifyTypeSwitchR, m.State))
 				for _, offender := range allOffenders {
 					edits = append(edits, edit.ReplaceWithNode(pass.Fset, offender, offender.X))
 				}
@@ -1780,7 +1873,7 @@ var checkUnnecessaryGuardQ = pattern.MustParse(`
 			(AssignStmt [(Ident "_") ok] ":=" indexexpr@(IndexExpr _ _))
 			ok
 			set@(IncDecStmt indexexpr "++")
-			(AssignStmt indexexpr "=" (BasicLit "INT" "1"))))`)
+			(AssignStmt indexexpr "=" (IntegerLiteral "1"))))`)
 
 func CheckUnnecessaryGuard(pass *analysis.Pass) (interface{}, error) {
 	fn := func(node ast.Node) {
@@ -1809,7 +1902,7 @@ func CheckElaborateSleep(pass *analysis.Pass) (interface{}, error) {
 				report.Report(pass, node, "should use time.Sleep instead of elaborate way of sleeping",
 					report.ShortRange(),
 					report.FilterGenerated(),
-					report.Fixes(edit.Fix("Use time.Sleep", edit.ReplaceWithPattern(pass, checkElaborateSleepR, m.State, node))))
+					report.Fixes(edit.Fix("Use time.Sleep", edit.ReplaceWithPattern(pass.Fset, node, checkElaborateSleepR, m.State))))
 			} else {
 				// TODO(dh): we could make a suggested fix if the body
 				// doesn't declare or shadow any identifiers
@@ -1823,23 +1916,80 @@ func CheckElaborateSleep(pass *analysis.Pass) (interface{}, error) {
 	return nil, nil
 }
 
-var checkPrintSprintQ = pattern.MustParse(`
-	(Or
+var (
+	checkPrintSprintQ = pattern.MustParse(`
+		(Or
+			(CallExpr
+				fn@(Or
+					(Function "fmt.Print")
+					(Function "fmt.Sprint")
+					(Function "fmt.Println")
+					(Function "fmt.Sprintln"))
+				[(CallExpr (Function "fmt.Sprintf") f:_)])
+			(CallExpr
+				fn@(Or
+					(Function "fmt.Fprint")
+					(Function "fmt.Fprintln"))
+				[_ (CallExpr (Function "fmt.Sprintf") f:_)]))`)
+
+	checkTestingErrorSprintfQ = pattern.MustParse(`
 		(CallExpr
-			fn@(Or
-				(Function "fmt.Print")
-				(Function "fmt.Sprint")
-				(Function "fmt.Println")
-				(Function "fmt.Sprintln"))
-			[(CallExpr (Function "fmt.Sprintf") f:_)])
+			sel@(SelectorExpr
+				recv
+				(Ident
+					name@(Or
+						"Error"
+						"Fatal"
+						"Fatalln"
+						"Log"
+						"Panic"
+						"Panicln"
+						"Print"
+						"Println"
+						"Skip")))
+			[(CallExpr (Function "fmt.Sprintf") args)])`)
+
+	checkLogSprintfQ = pattern.MustParse(`
 		(CallExpr
-			fn@(Or
-				(Function "fmt.Fprint")
-				(Function "fmt.Fprintln"))
-			[_ (CallExpr (Function "fmt.Sprintf") f:_)]))`)
+			(Function
+				(Or
+					"log.Fatal"
+					"log.Fatalln"
+					"log.Panic"
+					"log.Panicln"
+					"log.Print"
+					"log.Println"))
+			[(CallExpr (Function "fmt.Sprintf") args)])`)
+
+	checkSprintfMapping = map[string]struct {
+		recv        string
+		alternative string
+	}{
+		"(*testing.common).Error": {"(*testing.common)", "Errorf"},
+		"(testing.TB).Error":      {"(testing.TB)", "Errorf"},
+		"(*testing.common).Fatal": {"(*testing.common)", "Fatalf"},
+		"(testing.TB).Fatal":      {"(testing.TB)", "Fatalf"},
+		"(*testing.common).Log":   {"(*testing.common)", "Logf"},
+		"(testing.TB).Log":        {"(testing.TB)", "Logf"},
+		"(*testing.common).Skip":  {"(*testing.common)", "Skipf"},
+		"(testing.TB).Skip":       {"(testing.TB)", "Skipf"},
+		"(*log.Logger).Fatal":     {"(*log.Logger)", "Fatalf"},
+		"(*log.Logger).Fatalln":   {"(*log.Logger)", "Fatalf"},
+		"(*log.Logger).Panic":     {"(*log.Logger)", "Panicf"},
+		"(*log.Logger).Panicln":   {"(*log.Logger)", "Panicf"},
+		"(*log.Logger).Print":     {"(*log.Logger)", "Printf"},
+		"(*log.Logger).Println":   {"(*log.Logger)", "Printf"},
+		"log.Fatal":               {"", "log.Fatalf"},
+		"log.Fatalln":             {"", "log.Fatalf"},
+		"log.Panic":               {"", "log.Panicf"},
+		"log.Panicln":             {"", "log.Panicf"},
+		"log.Print":               {"", "log.Printf"},
+		"log.Println":             {"", "log.Printf"},
+	}
+)
 
 func CheckPrintSprintf(pass *analysis.Pass) (interface{}, error) {
-	fn := func(node ast.Node) {
+	fmtPrintf := func(node ast.Node) {
 		m, ok := code.Match(pass, checkPrintSprintQ, node)
 		if !ok {
 			return
@@ -1865,6 +2015,57 @@ func CheckPrintSprintf(pass *analysis.Pass) (interface{}, error) {
 		}
 		report.Report(pass, node, msg,
 			report.FilterGenerated())
+	}
+
+	methSprintf := func(node ast.Node) {
+		m, ok := code.Match(pass, checkTestingErrorSprintfQ, node)
+		if !ok {
+			return
+		}
+		mapped, ok := checkSprintfMapping[code.CallName(pass, node.(*ast.CallExpr))]
+		if !ok {
+			return
+		}
+
+		// Ensure that Errorf/Fatalf refer to the right method
+		recvTV, ok := pass.TypesInfo.Types[m.State["recv"].(ast.Expr)]
+		if !ok {
+			return
+		}
+		obj, _, _ := types.LookupFieldOrMethod(recvTV.Type, recvTV.Addressable(), nil, mapped.alternative)
+		f, ok := obj.(*types.Func)
+		if !ok {
+			return
+		}
+		if typeutil.FuncName(f) != mapped.recv+"."+mapped.alternative {
+			return
+		}
+
+		alt := &ast.SelectorExpr{
+			X:   m.State["recv"].(ast.Expr),
+			Sel: &ast.Ident{Name: mapped.alternative},
+		}
+		report.Report(pass, node, fmt.Sprintf("should use %s(...) instead of %s(fmt.Sprintf(...))", report.Render(pass, alt), report.Render(pass, m.State["sel"].(*ast.SelectorExpr))))
+	}
+
+	pkgSprintf := func(node ast.Node) {
+		_, ok := code.Match(pass, checkLogSprintfQ, node)
+		if !ok {
+			return
+		}
+		callName := code.CallName(pass, node.(*ast.CallExpr))
+		mapped, ok := checkSprintfMapping[callName]
+		if !ok {
+			return
+		}
+		report.Report(pass, node, fmt.Sprintf("should use %s(...) instead of %s(fmt.Sprintf(...))", mapped.alternative, callName))
+	}
+
+	fn := func(node ast.Node) {
+		fmtPrintf(node)
+		// TODO(dh): add suggested fixes
+		methSprintf(node)
+		pkgSprintf(node)
 	}
 	code.Preorder(pass, fn, (*ast.CallExpr)(nil))
 	return nil, nil

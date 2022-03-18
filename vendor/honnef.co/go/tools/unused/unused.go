@@ -1,3 +1,4 @@
+// Package unused contains code for finding unused code.
 package unused
 
 import (
@@ -1434,6 +1435,10 @@ func (g *graph) typ(t types.Type, parent types.Type) {
 			g.seeAndUse(t.At(i).Type(), t, edgeTupleElement|edgeType)
 			g.typ(t.At(i).Type(), nil)
 		}
+	case *typeutil.Iterator:
+		// (9.3) types use their underlying and element types
+		g.seeAndUse(t.Elem(), t, edgeElementType)
+		g.typ(t.Elem(), nil)
 	default:
 		panic(fmt.Sprintf("unreachable: %T", t))
 	}
@@ -1654,6 +1659,10 @@ func (g *graph) instructions(fn *ir.Function) {
 			case *ir.Parameter:
 				// nothing to do
 			case *ir.Const:
+				// nothing to do
+			case *ir.ArrayConst:
+				// nothing to do
+			case *ir.AggregateConst:
 				// nothing to do
 			case *ir.Recv:
 				// nothing to do

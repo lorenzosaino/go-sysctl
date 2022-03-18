@@ -31,14 +31,9 @@ import (
 	"go/token"
 	"go/types"
 	"os"
+
+	"honnef.co/go/tools/go/types/typeutil"
 )
-
-type opaqueType struct {
-	types.Type
-	name string
-}
-
-func (t *opaqueType) String() string { return t.name }
 
 var (
 	varOk    = newVar("ok", tBool)
@@ -51,7 +46,6 @@ var (
 	tInvalid    = types.Typ[types.Invalid]
 	tString     = types.Typ[types.String]
 	tUntypedNil = types.Typ[types.UntypedNil]
-	tRangeIter  = &opaqueType{nil, "iter"} // the type of all "range" iterators
 	tEface      = types.NewInterfaceType(nil, nil).Complete()
 )
 
@@ -377,7 +371,7 @@ func (b *builder) addr(fn *Function, e ast.Expr, escaping bool) lvalue {
 		}
 		v := &IndexAddr{
 			X:     x,
-			Index: emitConv(fn, b.expr(fn, e.Index), tInt, e.Index),
+			Index: b.expr(fn, e.Index),
 		}
 		v.setType(et)
 		return &address{addr: fn.emit(v, e), expr: e}
@@ -393,17 +387,28 @@ type store struct {
 	lhs    lvalue
 	rhs    Value
 	source ast.Node
+
+	// if debugRef is set no other fields will be set
+	debugRef *DebugRef
 }
 
 type storebuf struct{ stores []store }
 
 func (sb *storebuf) store(lhs lvalue, rhs Value, source ast.Node) {
-	sb.stores = append(sb.stores, store{lhs, rhs, source})
+	sb.stores = append(sb.stores, store{lhs, rhs, source, nil})
+}
+
+func (sb *storebuf) storeDebugRef(ref *DebugRef) {
+	sb.stores = append(sb.stores, store{debugRef: ref})
 }
 
 func (sb *storebuf) emit(fn *Function) {
 	for _, s := range sb.stores {
-		s.lhs.store(fn, s.rhs, s.source)
+		if s.debugRef == nil {
+			s.lhs.store(fn, s.rhs, s.source)
+		} else {
+			fn.emit(s.debugRef, nil)
+		}
 	}
 }
 
@@ -460,7 +465,14 @@ func (b *builder) assign(fn *Function, loc lvalue, e ast.Expr, isZero bool, sb *
 				// slice and map are handled by store ops in compLit.
 				switch loc.typ().Underlying().(type) {
 				case *types.Struct, *types.Array:
-					emitDebugRef(fn, e, addr, true)
+					if sb != nil {
+						// Make sure we don't emit DebugRefs before the store has actually occured
+						if ref := makeDebugRef(fn, e, addr, true); ref != nil {
+							sb.storeDebugRef(ref)
+						}
+					} else {
+						emitDebugRef(fn, e, addr, true)
+					}
 				}
 
 				return
@@ -1115,7 +1127,7 @@ func (b *builder) compLit(fn *Function, addr Value, e *ast.CompositeLit, isZero 
 				if idx != nil {
 					idxval = idx.Int64() + 1
 				}
-				idx = emitConst(fn, intConst(idxval))
+				idx = emitConst(fn, intConst(idxval)).(*Const)
 			}
 			iaddr := &IndexAddr{
 				X:     array,
@@ -1806,8 +1818,14 @@ func (b *builder) rangeIndexed(fn *Function, x Value, tv types.Type, source ast.
 	// 	jump loop
 	// done:                                   (target of break)
 
+	// We store in an Alloc and load it on each iteration so that lifting produces the necessary σ nodes
+	xAlloc := newVariable(fn, x.Type(), source)
+	xAlloc.store(x)
+
 	// Determine number of iterations.
-	var length Value
+	//
+	// We store the length in an Alloc and load it on each iteration so that lifting produces the necessary σ nodes
+	length := newVariable(fn, tInt, source)
 	if arr, ok := deref(x.Type()).Underlying().(*types.Array); ok {
 		// For array or *array, the number of iterations is
 		// known statically thanks to the type.  We avoid a
@@ -1815,14 +1833,14 @@ func (b *builder) rangeIndexed(fn *Function, x Value, tv types.Type, source ast.
 		// elimination if x is pure, static unrolling, etc.
 		// Ranging over a nil *array may have >0 iterations.
 		// We still generate code for x, in case it has effects.
-		length = emitConst(fn, intConst(arr.Len()))
+		length.store(emitConst(fn, intConst(arr.Len())))
 	} else {
 		// length = len(x).
 		var c Call
 		c.Call.Value = makeLen(x.Type())
 		c.Call.Args = []Value{x}
 		c.setType(tInt)
-		length = fn.emit(&c, source)
+		length.store(fn.emit(&c, source))
 	}
 
 	index := fn.addLocal(tInt, source)
@@ -1842,11 +1860,12 @@ func (b *builder) rangeIndexed(fn *Function, x Value, tv types.Type, source ast.
 
 	body := fn.newBasicBlock("rangeindex.body")
 	done = fn.newBasicBlock("rangeindex.done")
-	emitIf(fn, emitCompare(fn, token.LSS, incr, length, source), body, done, source)
+	emitIf(fn, emitCompare(fn, token.LSS, incr, length.load(), source), body, done, source)
 	fn.currentBlock = body
 
 	k = emitLoad(fn, index, source)
 	if tv != nil {
+		x := xAlloc.load()
 		switch t := x.Type().Underlying().(type) {
 		case *types.Array:
 			instr := &Index{
@@ -1907,8 +1926,13 @@ func (b *builder) rangeIter(fn *Function, x Value, tk, tv types.Type, source ast
 	}
 
 	rng := &Range{X: x}
-	rng.setType(tRangeIter)
-	it := fn.emit(rng, source)
+	rng.setType(typeutil.NewIterator(types.NewTuple(
+		varOk,
+		newVar("k", tk),
+		newVar("v", tv),
+	)))
+	it := newVariable(fn, rng.typ, source)
+	it.store(fn.emit(rng, source))
 
 	loop = fn.newBasicBlock("rangeiter.loop")
 	emitJump(fn, loop, source)
@@ -1916,27 +1940,25 @@ func (b *builder) rangeIter(fn *Function, x Value, tk, tv types.Type, source ast
 
 	_, isString := x.Type().Underlying().(*types.Basic)
 
-	okv := &Next{
-		Iter:     it,
+	okvInstr := &Next{
+		Iter:     it.load(),
 		IsString: isString,
 	}
-	okv.setType(types.NewTuple(
-		varOk,
-		newVar("k", tk),
-		newVar("v", tv),
-	))
-	fn.emit(okv, source)
+	okvInstr.setType(rng.typ.(*typeutil.Iterator).Elem())
+	fn.emit(okvInstr, source)
+	okv := newVariable(fn, okvInstr.Type(), source)
+	okv.store(okvInstr)
 
 	body := fn.newBasicBlock("rangeiter.body")
 	done = fn.newBasicBlock("rangeiter.done")
-	emitIf(fn, emitExtract(fn, okv, 0, source), body, done, source)
+	emitIf(fn, emitExtract(fn, okv.load(), 0, source), body, done, source)
 	fn.currentBlock = body
 
 	if tk != tInvalid {
-		k = emitExtract(fn, okv, 1, source)
+		k = emitExtract(fn, okv.load(), 1, source)
 	}
 	if tv != tInvalid {
-		v = emitExtract(fn, okv, 2, source)
+		v = emitExtract(fn, okv.load(), 2, source)
 	}
 	return
 }
@@ -1962,15 +1984,45 @@ func (b *builder) rangeChan(fn *Function, x Value, tk types.Type, source ast.Nod
 	loop = fn.newBasicBlock("rangechan.loop")
 	emitJump(fn, loop, source)
 	fn.currentBlock = loop
-	retv := emitRecv(fn, x, true, types.NewTuple(newVar("k", x.Type().Underlying().(*types.Chan).Elem()), varOk), source)
+
+	recv := emitRecv(fn, x, true, types.NewTuple(newVar("k", x.Type().Underlying().(*types.Chan).Elem()), varOk), source)
+	retv := newVariable(fn, recv.Type(), source)
+	retv.store(recv)
+
 	body := fn.newBasicBlock("rangechan.body")
 	done = fn.newBasicBlock("rangechan.done")
-	emitIf(fn, emitExtract(fn, retv, 1, source), body, done, source)
+	emitIf(fn, emitExtract(fn, retv.load(), 1, source), body, done, source)
 	fn.currentBlock = body
 	if tk != nil {
-		k = emitExtract(fn, retv, 0, source)
+		k = emitExtract(fn, retv.load(), 0, source)
 	}
 	return
+}
+
+type variable struct {
+	alloc  *Alloc
+	fn     *Function
+	source ast.Node
+}
+
+func newVariable(fn *Function, typ types.Type, source ast.Node) *variable {
+	alloc := &Alloc{}
+	alloc.setType(types.NewPointer(typ))
+	fn.emit(alloc, source)
+	fn.Locals = append(fn.Locals, alloc)
+	return &variable{
+		alloc:  alloc,
+		fn:     fn,
+		source: source,
+	}
+}
+
+func (v *variable) store(sv Value) {
+	emitStore(v.fn, v.alloc, sv, v.source)
+}
+
+func (v *variable) load() Value {
+	return emitLoad(v.fn, v.alloc, v.source)
 }
 
 // rangeStmt emits to fn code for the range statement s, optionally

@@ -47,8 +47,16 @@ func emitRecv(f *Function, ch Value, commaOk bool, typ types.Type, source ast.No
 // expression e with value v.
 //
 func emitDebugRef(f *Function, e ast.Expr, v Value, isAddr bool) {
+	ref := makeDebugRef(f, e, v, isAddr)
+	if ref == nil {
+		return
+	}
+	f.emit(ref, nil)
+}
+
+func makeDebugRef(f *Function, e ast.Expr, v Value, isAddr bool) *DebugRef {
 	if !f.debugInfo() {
-		return // debugging not enabled
+		return nil // debugging not enabled
 	}
 	if v == nil || e == nil {
 		panic("nil")
@@ -57,20 +65,20 @@ func emitDebugRef(f *Function, e ast.Expr, v Value, isAddr bool) {
 	e = unparen(e)
 	if id, ok := e.(*ast.Ident); ok {
 		if isBlankIdent(id) {
-			return
+			return nil
 		}
 		obj = f.Pkg.objectOf(id)
 		switch obj.(type) {
 		case *types.Nil, *types.Const, *types.Builtin:
-			return
+			return nil
 		}
 	}
-	f.emit(&DebugRef{
+	return &DebugRef{
 		X:      v,
 		Expr:   e,
 		IsAddr: isAddr,
 		object: obj,
-	}, nil)
+	}
 }
 
 // emitArith emits to f code to compute the binary operation op(x, y)
@@ -155,7 +163,7 @@ func emitCompare(f *Function, op token.Token, x, y Value, source ast.Node) Value
 //
 func isValuePreserving(ut_src, ut_dst types.Type) bool {
 	// Identical underlying types?
-	if structTypesIdentical(ut_dst, ut_src) {
+	if types.IdenticalIgnoreTags(ut_dst, ut_src) {
 		return true
 	}
 
@@ -447,15 +455,10 @@ func emitFieldSelection(f *Function, v Value, index int, wantAddr bool, id *ast.
 // and returns it.
 //
 func zeroValue(f *Function, t types.Type, source ast.Node) Value {
-	switch t.Underlying().(type) {
-	case *types.Struct, *types.Array:
-		return emitLoad(f, f.addLocal(t, source), source)
-	default:
-		return emitConst(f, zeroConst(t))
-	}
+	return emitConst(f, zeroConst(t))
 }
 
-func emitConst(f *Function, c *Const) *Const {
+func emitConst(f *Function, c Constant) Constant {
 	f.consts = append(f.consts, c)
 	return c
 }

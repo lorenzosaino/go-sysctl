@@ -87,3 +87,42 @@ func makeLen(T types.Type) *Builtin {
 		sig:  types.NewSignature(nil, lenParams, lenResults, false),
 	}
 }
+
+type StackMap struct {
+	m []map[Value]Value
+}
+
+func (m *StackMap) Push() {
+	m.m = append(m.m, map[Value]Value{})
+}
+
+func (m *StackMap) Pop() {
+	m.m = m.m[:len(m.m)-1]
+}
+
+func (m *StackMap) Get(key Value) (Value, bool) {
+	for i := len(m.m) - 1; i >= 0; i-- {
+		if v, ok := m.m[i][key]; ok {
+			return v, true
+		}
+	}
+	return nil, false
+}
+
+func (m *StackMap) Set(k Value, v Value) {
+	m.m[len(m.m)-1][k] = v
+}
+
+// Unwrap recursively unwraps Sigma and Copy nodes.
+func Unwrap(v Value) Value {
+	for {
+		switch vv := v.(type) {
+		case *Sigma:
+			v = vv.X
+		case *Copy:
+			v = vv.X
+		default:
+			return v
+		}
+	}
+}
