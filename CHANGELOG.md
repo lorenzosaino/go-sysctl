@@ -1,5 +1,13 @@
 # CHANGELOG
 
+## 0.3.0
+
+* Correctly evaluate which sysctl files are readable when running `GetPattern()`
+* Upgrade all vendored dependencies
+* Fix builds for Go 1.18
+* Code linting
+* Test improvements
+
 ## 0.2.0
 
 * Add `Client` type
