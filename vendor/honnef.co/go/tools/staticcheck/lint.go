@@ -38,6 +38,7 @@ import (
 	"honnef.co/go/tools/staticcheck/fakereflect"
 	"honnef.co/go/tools/staticcheck/fakexml"
 
+	"golang.org/x/exp/typeparams"
 	"golang.org/x/tools/go/analysis"
 	"golang.org/x/tools/go/analysis/passes/inspect"
 	"golang.org/x/tools/go/ast/inspector"
@@ -915,6 +916,14 @@ func isInLoop(b *ir.BasicBlock) bool {
 }
 
 func CheckUntrappableSignal(pass *analysis.Pass) (interface{}, error) {
+	isSignal := func(pass *analysis.Pass, expr ast.Expr, name string) bool {
+		if expr, ok := expr.(*ast.SelectorExpr); ok {
+			return code.SelectorName(pass, expr) == name
+		} else {
+			return false
+		}
+	}
+
 	fn := func(node ast.Node) {
 		call := node.(*ast.CallExpr)
 		if !code.IsCallToAny(pass, call,
@@ -924,22 +933,22 @@ func CheckUntrappableSignal(pass *analysis.Pass) (interface{}, error) {
 
 		hasSigterm := false
 		for _, arg := range call.Args {
-			if conv, ok := arg.(*ast.CallExpr); ok && isName(pass, conv.Fun, "os.Signal") {
+			if conv, ok := arg.(*ast.CallExpr); ok && isSignal(pass, conv.Fun, "os.Signal") {
 				arg = conv.Args[0]
 			}
 
-			if isName(pass, arg, "syscall.SIGTERM") {
+			if isSignal(pass, arg, "syscall.SIGTERM") {
 				hasSigterm = true
 				break
 			}
 
 		}
 		for i, arg := range call.Args {
-			if conv, ok := arg.(*ast.CallExpr); ok && isName(pass, conv.Fun, "os.Signal") {
+			if conv, ok := arg.(*ast.CallExpr); ok && isSignal(pass, conv.Fun, "os.Signal") {
 				arg = conv.Args[0]
 			}
 
-			if isName(pass, arg, "os.Kill") || isName(pass, arg, "syscall.SIGKILL") {
+			if isSignal(pass, arg, "os.Kill") || isSignal(pass, arg, "syscall.SIGKILL") {
 				var fixes []analysis.SuggestedFix
 				if !hasSigterm {
 					nargs := make([]ast.Expr, len(call.Args))
@@ -966,7 +975,7 @@ func CheckUntrappableSignal(pass *analysis.Pass) (interface{}, error) {
 				fixes = append(fixes, edit.Fix(fmt.Sprintf("remove %s from list of arguments", report.Render(pass, arg)), edit.ReplaceWithNode(pass.Fset, call, &ncall)))
 				report.Report(pass, arg, fmt.Sprintf("%s cannot be trapped (did you mean syscall.SIGTERM?)", report.Render(pass, arg)), report.Fixes(fixes...))
 			}
-			if isName(pass, arg, "syscall.SIGSTOP") {
+			if isSignal(pass, arg, "syscall.SIGSTOP") {
 				nargs := make([]ast.Expr, 0, len(call.Args)-1)
 				for j, a := range call.Args {
 					if i == j {
@@ -1168,7 +1177,7 @@ func CheckDubiousDeferInChannelRangeLoop(pass *analysis.Pass) (interface{}, erro
 	fn := func(node ast.Node) {
 		loop := node.(*ast.RangeStmt)
 		typ := pass.TypesInfo.TypeOf(loop.X)
-		_, ok := typ.Underlying().(*types.Chan)
+		_, ok := typeutil.CoreType(typ).(*types.Chan)
 		if !ok {
 			return
 		}
@@ -1319,22 +1328,29 @@ func CheckLoopEmptyDefault(pass *analysis.Pass) (interface{}, error) {
 func CheckLhsRhsIdentical(pass *analysis.Pass) (interface{}, error) {
 	var isFloat func(T types.Type) bool
 	isFloat = func(T types.Type) bool {
-		switch T := T.Underlying().(type) {
-		case *types.Basic:
-			kind := T.Kind()
-			return kind == types.Float32 || kind == types.Float64
-		case *types.Array:
-			return isFloat(T.Elem())
-		case *types.Struct:
-			for i := 0; i < T.NumFields(); i++ {
-				if !isFloat(T.Field(i).Type()) {
-					return false
-				}
-			}
+		tset := typeutil.NewTypeSet(T)
+		if len(tset.Terms) == 0 {
+			// no terms, so floats are a possibility
 			return true
-		default:
-			return false
 		}
+		return tset.Any(func(term *typeparams.Term) bool {
+			switch typ := term.Type().Underlying().(type) {
+			case *types.Basic:
+				kind := typ.Kind()
+				return kind == types.Float32 || kind == types.Float64
+			case *types.Array:
+				return isFloat(typ.Elem())
+			case *types.Struct:
+				for i := 0; i < typ.NumFields(); i++ {
+					if !isFloat(typ.Field(i).Type()) {
+						return false
+					}
+				}
+				return true
+			default:
+				return false
+			}
+		})
 	}
 
 	// TODO(dh): this check ignores the existence of side-effects and
@@ -2264,10 +2280,20 @@ func CheckIneffectiveLoop(pass *analysis.Pass) (interface{}, error) {
 				body = node.Body
 				loop = node
 			case *ast.RangeStmt:
-				typ := pass.TypesInfo.TypeOf(node.X)
-				if _, ok := typ.Underlying().(*types.Map); ok {
-					// looping once over a map is a valid pattern for
-					// getting an arbitrary element.
+				ok := typeutil.All(pass.TypesInfo.TypeOf(node.X), func(term *typeparams.Term) bool {
+					switch term.Type().Underlying().(type) {
+					case *types.Slice, *types.Chan, *types.Basic, *types.Pointer, *types.Array:
+						return true
+					case *types.Map:
+						// looping once over a map is a valid pattern for
+						// getting an arbitrary element.
+						return false
+					default:
+						lint.ExhaustiveTypeSwitch(term.Type().Underlying())
+						return false
+					}
+				})
+				if !ok {
 					return true
 				}
 				body = node.Body
@@ -2802,7 +2828,6 @@ func CheckInfiniteRecursion(pass *analysis.Pass) (interface{}, error) {
 			}
 
 			block := site.Block()
-			canReturn := false
 			for _, b := range fn.Blocks {
 				if block.Dominates(b) {
 					continue
@@ -2811,12 +2836,8 @@ func CheckInfiniteRecursion(pass *analysis.Pass) (interface{}, error) {
 					continue
 				}
 				if _, ok := b.Control().(*ir.Return); ok {
-					canReturn = true
-					break
+					return
 				}
-			}
-			if canReturn {
-				return
 			}
 			report.Report(pass, site, "infinite recursive call")
 		})
@@ -2837,17 +2858,6 @@ func objectName(obj types.Object) string {
 	}
 	name += obj.Name()
 	return name
-}
-
-func isName(pass *analysis.Pass, expr ast.Expr, name string) bool {
-	var obj types.Object
-	switch expr := expr.(type) {
-	case *ast.Ident:
-		obj = pass.TypesInfo.ObjectOf(expr)
-	case *ast.SelectorExpr:
-		obj = pass.TypesInfo.ObjectOf(expr.Sel)
-	}
-	return objectName(obj) == name
 }
 
 func CheckLeakyTimeTick(pass *analysis.Pass) (interface{}, error) {
@@ -2938,11 +2948,13 @@ func CheckRepeatedIfElse(pass *analysis.Pass) (interface{}, error) {
 func CheckSillyBitwiseOps(pass *analysis.Pass) (interface{}, error) {
 	fn := func(node ast.Node) {
 		binop := node.(*ast.BinaryExpr)
-		b, ok := pass.TypesInfo.TypeOf(binop).Underlying().(*types.Basic)
-		if !ok {
-			return
-		}
-		if (b.Info() & types.IsInteger) == 0 {
+		if !typeutil.All(pass.TypesInfo.TypeOf(binop), func(term *typeparams.Term) bool {
+			b, ok := term.Type().Underlying().(*types.Basic)
+			if !ok {
+				return false
+			}
+			return (b.Info() & types.IsInteger) != 0
+		}) {
 			return
 		}
 		switch binop.Op {
@@ -3092,7 +3104,7 @@ fnLoop:
 						// special case for benchmarks in the fmt package
 						continue
 					}
-					report.Report(pass, ins, fmt.Sprintf("%s is a pure function but its return value is ignored", callee.Name()))
+					report.Report(pass, ins, fmt.Sprintf("%s is a pure function but its return value is ignored", callee.Object().Name()))
 				}
 			}
 		}
@@ -3136,6 +3148,9 @@ func CheckDeprecated(pass *analysis.Pass) (interface{}, error) {
 		}
 
 		obj := pass.TypesInfo.ObjectOf(sel.Sel)
+		if obj_, ok := obj.(*types.Func); ok {
+			obj = typeparams.OriginMethod(obj_)
+		}
 		if obj.Pkg() == nil {
 			return true
 		}
@@ -3442,7 +3457,12 @@ func CheckMapBytesKey(pass *analysis.Pass) (interface{}, error) {
 				if !ok || conv.Type() != types.Universe.Lookup("string").Type() {
 					continue
 				}
-				if s, ok := conv.X.Type().(*types.Slice); !ok || s.Elem() != types.Universe.Lookup("byte").Type() {
+				tset := typeutil.NewTypeSet(conv.X.Type())
+				// If at least one of the types is []byte, then it's more efficient to inline the conversion
+				if !tset.Any(func(term *typeparams.Term) bool {
+					s, ok := term.Type().Underlying().(*types.Slice)
+					return ok && s.Elem().Underlying() == types.Universe.Lookup("byte").Type()
+				}) {
 					continue
 				}
 				refs := conv.Referrers()
@@ -3758,6 +3778,9 @@ func CheckToLowerToUpperComparison(pass *analysis.Pass) (interface{}, error) {
 func CheckUnreachableTypeCases(pass *analysis.Pass) (interface{}, error) {
 	// Check if T subsumes V in a type switch. T subsumes V if T is an interface and T's method set is a subset of V's method set.
 	subsumes := func(T, V types.Type) bool {
+		if typeparams.IsTypeParam(T) {
+			return false
+		}
 		tIface, ok := T.Underlying().(*types.Interface)
 		if !ok {
 			return false
@@ -3923,10 +3946,21 @@ func checkJSONTag(pass *analysis.Pass, field *ast.Field, tag string) {
 		case "string":
 			cs++
 			// only for string, floating point, integer and bool
-			T := typeutil.Dereference(pass.TypesInfo.TypeOf(field.Type).Underlying()).Underlying()
-			basic, ok := T.(*types.Basic)
-			if !ok || (basic.Info()&(types.IsBoolean|types.IsInteger|types.IsFloat|types.IsString)) == 0 {
+			tset := typeutil.NewTypeSet(pass.TypesInfo.TypeOf(field.Type))
+			if len(tset.Terms) == 0 {
+				// TODO(dh): improve message, call out the use of type parameters
 				report.Report(pass, field.Tag, "the JSON string option only applies to fields of type string, floating point, integer or bool, or pointers to those")
+				continue
+			}
+			for _, term := range tset.Terms {
+				T := typeutil.Dereference(term.Type().Underlying())
+				for _, term2 := range typeutil.NewTypeSet(T).Terms {
+					basic, ok := term2.Type().Underlying().(*types.Basic)
+					if !ok || (basic.Info()&(types.IsBoolean|types.IsInteger|types.IsFloat|types.IsString)) == 0 {
+						// TODO(dh): improve message, show how we arrived at the type
+						report.Report(pass, field.Tag, "the JSON string option only applies to fields of type string, floating point, integer or bool, or pointers to those")
+					}
+				}
 			}
 		case "inline":
 			ci++
@@ -4135,7 +4169,12 @@ func CheckMaybeNil(pass *analysis.Pass) (interface{}, error) {
 					ptr = instr.Addr
 				case *ir.IndexAddr:
 					ptr = instr.X
-					if _, ok := ptr.Type().Underlying().(*types.Slice); ok {
+					if typeutil.All(ptr.Type(), func(term *typeparams.Term) bool {
+						if _, ok := term.Type().Underlying().(*types.Slice); ok {
+							return true
+						}
+						return false
+					}) {
 						// indexing a nil slice does not cause a nil pointer panic
 						//
 						// Note: This also works around the bad lowering of range loops over slices
@@ -4294,7 +4333,7 @@ func findSliceLenChecks(pass *analysis.Pass) {
 			if !ok {
 				continue
 			}
-			if _, ok := param.Type().Underlying().(*types.Slice); !ok {
+			if !typeutil.All(param.Type(), typeutil.IsSlice) {
 				continue
 			}
 
@@ -4334,9 +4373,7 @@ func findIndirectSliceLenChecks(pass *analysis.Pass) {
 					continue
 				}
 
-				if callee.Pkg == fn.Pkg {
-					// TODO(dh): are we missing interesting wrappers
-					// because wrappers don't have Pkg set?
+				if callee.Pkg == fn.Pkg || callee.Pkg == nil {
 					doFunction(callee)
 				}
 
@@ -4348,12 +4385,12 @@ func findIndirectSliceLenChecks(pass *analysis.Pass) {
 						argi--
 					}
 
-					// TODO(dh): support parameters that have flown through sigmas and phis
+					// TODO(dh): support parameters that have flown through length-preserving instructions
 					param, ok := arg.(*ir.Parameter)
 					if !ok {
 						continue
 					}
-					if _, ok := param.Type().Underlying().(*types.Slice); !ok {
+					if !typeutil.All(param.Type(), typeutil.IsSlice) {
 						continue
 					}
 
@@ -4503,7 +4540,7 @@ func CheckTypedNilInterface(pass *analysis.Pass) (interface{}, error) {
 				if !ok || !(binop.Op == token.EQL || binop.Op == token.NEQ) {
 					continue
 				}
-				if _, ok := binop.X.Type().Underlying().(*types.Interface); !ok {
+				if _, ok := binop.X.Type().Underlying().(*types.Interface); !ok || typeparams.IsTypeParam(binop.X.Type()) {
 					// TODO support swapped X and Y
 					continue
 				}
