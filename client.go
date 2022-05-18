@@ -86,6 +86,10 @@ func (c *Client) GetPattern(pattern string) (map[string]string, error) {
 		if info.IsDir() {
 			return nil
 		}
+		if info.Mode().Perm()&0400 == 0 {
+			// skip write only files
+			return nil
+		}
 		key := c.keyFromPath(path)
 		if !re.MatchString(key) {
 			return nil
