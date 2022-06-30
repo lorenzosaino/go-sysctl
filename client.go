@@ -93,12 +93,18 @@ func (c *Client) GetPattern(pattern string) (map[string]string, error) {
 		val, err := readFile(path)
 		if err != nil {
 			var pathError *os.PathError
-			if errors.As(err, &pathError) && pathError.Op == "open" {
-				// this occurs if the file is not readable,
-				// which should not be considered an error.
-				// Instead, we should silently skip sysctls
-				// we have no permissions to read.
-				return nil
+			if errors.As(err, &pathError) {
+				switch pathError.Op {
+				case "open", "read":
+					// this occurs if the file is not readable,
+					// which should not be considered an error.
+					// Instead, we should silently skip sysctls
+					// we have no permissions to read.
+					return nil
+				default:
+					return fmt.Errorf("error reading %s: op: %s, err: %s", path, pathError.Op, pathError.Err)
+				}
+
 			}
 			return fmt.Errorf("error reading %s: %v", path, err)
 		}

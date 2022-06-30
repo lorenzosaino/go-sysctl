@@ -89,6 +89,20 @@ func TestGetPattern(t *testing.T) {
 	}
 }
 
+func TestGetAll(t *testing.T) {
+	if !isUserRoot() {
+		t.Skip("user not root, skipping test")
+	}
+
+	got, err := GetAll()
+	if err != nil {
+		t.Fatalf("Could not get sysctl values: %s", err.Error())
+	}
+	if len(got) == 0 {
+		t.Fatal("no error returned but returned empty slice of sysctl values")
+	}
+}
+
 func isUserRoot() bool {
 	u, err := user.Current()
 	if err != nil {
