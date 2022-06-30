@@ -9,6 +9,15 @@ import (
 	"strings"
 )
 
+// DefaultPath is the default path to the sysctl virtual files.
+const DefaultPath = "/proc/sys/"
+
+var std *Client
+
+func init() {
+	std = &Client{path: DefaultPath}
+}
+
 func checkExistingDir(path string) error {
 	dir, err := os.Stat(path)
 	if err != nil {

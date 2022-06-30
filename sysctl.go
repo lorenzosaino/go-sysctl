@@ -1,15 +1,6 @@
 // Package sysctl provides functions wrapping the sysctl interface.
 package sysctl
 
-// DefaultPath is the default path to the sysctl virtual files.
-const DefaultPath = "/proc/sys/"
-
-var std *Client
-
-func init() {
-	std = &Client{path: DefaultPath}
-}
-
 // Get returns a sysctl from a given key.
 func Get(key string) (string, error) {
 	return std.Get(key)
