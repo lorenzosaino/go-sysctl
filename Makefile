@@ -1,16 +1,17 @@
 SHELL = /bin/bash -euo pipefail
 
+# Go binary to use in non-container targets
 GO ?= go
 
 # Variables for container targets
 GO_VERSION ?= latest
-CONTAINER = golang:$(GO_VERSION)
+CONTAINER ?= golang:$(GO_VERSION)
 PKG = github.com/lorenzosaino/go-sysctl
 DOCKER_RUN_FLAGS = --rm -it -v $$(pwd):/go/src/$(PKG) -w /go/src/$(PKG)
 
 export GO111MODULE=on
 
-all: fmt-check lint vet staticcheck test ## Run all checks and tests
+all: fmt-check lint vet nilness staticcheck test ## Run all checks and tests
 
 .PHONY: mod-upgrade
 mod-upgrade: ## Upgrade all vendored dependencies
@@ -29,7 +30,7 @@ fmt-check: ## Validate that all source files pass "go fmt"
 
 .PHONY: lint
 lint: ## Run go lint
-	@[ -x "$(shell which golint)" ] || $(GO) install ./vendor/golang.org/x/lint/golint 2>/dev/null || $(GO) get -u golang.org/x/lint/golint
+	@[ -x "$(shell which golint)" ] || $(GO) install ./vendor/golang.org/x/lint/golint 2>/dev/null || $(GO) install golang.org/x/lint/golint@latest
 	@# We need to explicitly exclude ./vendor because of https://github.com/golang/lint/issues/320
 	golint -set_exit_status $(shell $(GO)  list ./... | grep -v '/vendor/')
 
@@ -39,8 +40,12 @@ vet: ## Run go vet
 
 .PHONY: staticcheck
 staticcheck: ## Run staticcheck
-	@[ -x "$(shell which staticcheck)" ] || $(GO) install ./vendor/honnef.co/go/tools/cmd/staticcheck 2>/dev/null || $(GO) get -u honnef.co/go/tools/cmd/staticcheck
+	@[ -x "$(shell which staticcheck)" ] || $(GO) install ./vendor/honnef.co/go/tools/cmd/staticcheck 2>/dev/null || $(GO) install honnef.co/go/tools/cmd/staticcheck@latest
 	staticcheck ./...
+
+nilness: ## Run nilness
+	$(GO) install ./vendor/golang.org/x/tools/go/analysis/passes/nilness/cmd/nilness 2>/dev/null || [ -x "$(shell which nilness)" ] || $(GO) install golang.org/x/tools/go/analysis/passes/nilness/cmd/nilness@latest
+	nilness ./...
 
 .PHONY: test
 test: ## Run all tests
