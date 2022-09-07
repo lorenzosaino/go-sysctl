@@ -47,6 +47,10 @@ nilness: ## Run nilness
 	$(GO) install ./vendor/golang.org/x/tools/go/analysis/passes/nilness/cmd/nilness 2>/dev/null || [ -x "$(shell which nilness)" ] || $(GO) install golang.org/x/tools/go/analysis/passes/nilness/cmd/nilness@latest
 	nilness ./...
 
+govulncheck: ## Run govulncheck
+	$(GO) install ./vendor/golang.org/x/vuln/cmd/govulncheck 2>/dev/null || [ -x "$(shell which govulncheck)" ] || $(GO) install golang.org/x/vuln/cmd/govulncheck@latest
+	govulncheck ./...
+
 .PHONY: test
 test: ## Run all tests
 	$(GO) test -race ./...
