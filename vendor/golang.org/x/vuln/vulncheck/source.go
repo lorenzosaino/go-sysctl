@@ -8,11 +8,12 @@ import (
 	"context"
 	"fmt"
 	"go/token"
-	"runtime"
 	"sort"
+	"sync"
 
 	"golang.org/x/tools/go/callgraph"
 	"golang.org/x/tools/go/ssa"
+	"golang.org/x/vuln/internal"
 	"golang.org/x/vuln/internal/derrors"
 	"golang.org/x/vuln/internal/semver"
 	"golang.org/x/vuln/osv"
@@ -51,7 +52,33 @@ func Source(ctx context.Context, pkgs []*Package, cfg *Config) (_ *Result, err e
 	if cfg.SourceGoVersion != "" {
 		stdlibModule.Version = semver.GoTagToSemver(cfg.SourceGoVersion)
 	} else {
-		stdlibModule.Version = semver.GoTagToSemver(runtime.Version())
+		gover, err := internal.GoEnv("GOVERSION")
+		if err != nil {
+			return nil, err
+		}
+		stdlibModule.Version = semver.GoTagToSemver(gover)
+	}
+
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	// If we are building the callgraph, build ssa and the callgraph in parallel
+	// with fetching vulnerabilities. If the vulns set is empty, return without
+	// waiting for SSA construction or callgraph to finish.
+	var (
+		wg       sync.WaitGroup // guards entries, cg, and buildErr
+		entries  []*ssa.Function
+		cg       *callgraph.Graph
+		buildErr error
+	)
+	if !cfg.ImportsOnly {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			prog, ssaPkgs := buildSSA(pkgs, fset)
+			entries = entryPoints(ssaPkgs)
+			cg, buildErr = callGraph(ctx, prog, entries)
+		}()
 	}
 
 	mods := extractModules(pkgs)
@@ -59,8 +86,7 @@ func Source(ctx context.Context, pkgs []*Package, cfg *Config) (_ *Result, err e
 	if err != nil {
 		return nil, err
 	}
-	modVulns = modVulns.filter(lookupEnv("GOOS", runtime.GOOS), lookupEnv("GOARCH", runtime.GOARCH))
-
+	modVulns = modVulns.filter(cfg.GOOS, cfg.GOARCH)
 	result := &Result{
 		Imports:  &ImportGraph{Packages: make(map[int]*PkgNode)},
 		Requires: &RequireGraph{Modules: make(map[int]*ModNode)},
@@ -70,16 +96,23 @@ func Source(ctx context.Context, pkgs []*Package, cfg *Config) (_ *Result, err e
 	vulnPkgModSlice(pkgs, modVulns, result)
 	setModules(result, mods)
 	// Return result immediately if in ImportsOnly mode or
-	// if there are no vulnerable packages, as there is no
-	// need to build the call graph.
+	// if there are no vulnerable packages.
 	if cfg.ImportsOnly || len(result.Imports.Packages) == 0 {
 		return result, nil
 	}
 
-	prog, ssaPkgs := buildSSA(pkgs, fset)
-	entries := entryPoints(ssaPkgs)
-	cg := callGraph(prog, entries)
+	wg.Wait() // wait for build to finish
+	if buildErr != nil {
+		return nil, err
+	}
+
 	vulnCallGraphSlice(entries, modVulns, cg, result)
+
+	// Release residual memory.
+	for _, p := range result.Imports.Packages {
+		p.pkg = nil
+	}
+
 	return result, nil
 }
 

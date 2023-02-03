@@ -5,22 +5,18 @@
 package main
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
 	"flag"
 	"fmt"
-	"go/build"
 	"os"
-	"os/exec"
-	"sort"
+	"path/filepath"
 	"strings"
 
 	"golang.org/x/tools/go/buildutil"
 	"golang.org/x/tools/go/packages"
 	"golang.org/x/vuln/client"
-	"golang.org/x/vuln/cmd/govulncheck/internal/govulncheck"
-	"golang.org/x/vuln/osv"
+	"golang.org/x/vuln/exp/govulncheck"
+	gvc "golang.org/x/vuln/internal/govulncheck"
 	"golang.org/x/vuln/vulncheck"
 )
 
@@ -28,12 +24,20 @@ var (
 	jsonFlag    = flag.Bool("json", false, "output JSON")
 	verboseFlag = flag.Bool("v", false, "print a full call stack for each vulnerability")
 	testFlag    = flag.Bool("test", false, "analyze test files. Only valid for source code.")
+	tagsFlag    buildutil.TagsFlag
+
+	// testmode flags. See main_testmode.go.
+	dirFlag string
 )
 
 func init() {
-	flag.Var((*buildutil.TagsFlag)(&build.Default.BuildTags), "tags",
-		"comma-separated `list` of build tags")
+	flag.Var(&tagsFlag, "tags", "comma-separated `list` of build tags")
 }
+
+const (
+	envGOVULNDB = "GOVULNDB"
+	vulndbHost  = "https://vuln.go.dev"
+)
 
 func main() {
 	flag.Usage = func() {
@@ -43,9 +47,7 @@ func main() {
 
 `)
 		flag.PrintDefaults()
-		fmt.Fprintf(os.Stderr, `
-For details, see https://pkg.go.dev/golang.org/x/vuln/cmd/govulncheck.
-`)
+		fmt.Fprintf(os.Stderr, "\n%s\n", detailsMessage)
 	}
 	flag.Parse()
 
@@ -54,287 +56,129 @@ For details, see https://pkg.go.dev/golang.org/x/vuln/cmd/govulncheck.
 		os.Exit(1)
 	}
 
-	dbs := []string{"https://vuln.go.dev"}
-	if GOVULNDB := os.Getenv("GOVULNDB"); GOVULNDB != "" {
-		dbs = strings.Split(GOVULNDB, ",")
+	patterns := flag.Args()
+
+	sourceAnalysis := true
+	if len(patterns) == 1 && isFile(patterns[0]) {
+		sourceAnalysis = false
 	}
+	validateFlags(sourceAnalysis)
+
+	if err := doGovulncheck(patterns, sourceAnalysis); err != nil {
+		die(fmt.Sprintf("govulncheck: %v", err))
+	}
+}
+
+// doGovulncheck performs main govulncheck functionality and exits the
+// program upon success with an appropriate exit status. Otherwise,
+// returns an error.
+func doGovulncheck(patterns []string, sourceAnalysis bool) error {
+	ctx := context.Background()
+	dir := filepath.FromSlash(dirFlag)
+
+	dbs := []string{vulndbHost}
+	if db := os.Getenv(envGOVULNDB); db != "" {
+		dbs = strings.Split(db, ",")
+	}
+
+	cache, err := govulncheck.DefaultCache()
+	if err != nil {
+		return err
+	}
+
 	dbClient, err := client.NewClient(dbs, client.Options{
-		HTTPCache: govulncheck.DefaultCache(),
+		HTTPCache: cache,
 	})
 	if err != nil {
-		die("govulncheck: %s", err)
+		return err
 	}
-	vcfg := &vulncheck.Config{Client: dbClient, SourceGoVersion: goVersion()}
 
-	patterns := flag.Args()
 	if !*jsonFlag {
-		fmt.Printf(`govulncheck is an experimental tool. Share feedback at https://go.dev/s/govulncheck-feedback.
-
-Scanning for dependencies with known vulnerabilities...
-`)
+		// Print intro message when in text or verbose mode
+		printIntro(ctx, dbClient, dbs, sourceAnalysis)
 	}
-	var (
-		r          *vulncheck.Result
-		pkgs       []*vulncheck.Package
-		unaffected []*vulncheck.Vuln
-		ctx        = context.Background()
-	)
-	if len(patterns) == 1 && isFile(patterns[0]) {
-		if *testFlag {
-			die("govulncheck: the -test flag is invalid for binaries")
-		}
-		if build.Default.BuildTags != nil {
-			die("govulncheck: the -tags flag is invalid for binaries")
-		}
-		f, err := os.Open(patterns[0])
-		if err != nil {
-			die("govulncheck: %v", err)
-		}
-		defer f.Close()
-		r, err = binary(ctx, f, vcfg)
-		if err != nil {
-			die("govulncheck: %v", err)
-		}
-	} else {
-		cfg := &packages.Config{
-			Tests:      *testFlag,
-			BuildFlags: []string{fmt.Sprintf("-tags=%s", strings.Join(build.Default.BuildTags, ","))},
-		}
-		pkgs, err = govulncheck.LoadPackages(cfg, patterns...)
+
+	// config GoVersion is "", which means use current
+	// Go version at path.
+	cfg := &govulncheck.Config{Client: dbClient}
+	var res *govulncheck.Result
+	if sourceAnalysis {
+		var pkgs []*vulncheck.Package
+		pkgs, err = loadPackages(patterns, dir)
 		if err != nil {
 			// Try to provide a meaningful and actionable error message.
-			if !fileExists("go.mod") {
-				die(noGoModErrorMessage)
-			} else if !fileExists("go.sum") {
-				die(noGoSumErrorMessage)
+			if !fileExists(filepath.Join(dir, "go.mod")) {
+				return errNoGoMod
 			}
-			die("govulncheck: %v", err)
+			if isGoVersionMismatchError(err) {
+				return fmt.Errorf("%v\n\n%v", errGoVersionMismatch, err)
+			}
+			return err
 		}
 
-		// Sort pkgs so that the PkgNodes returned by vulncheck.Source will be
-		// deterministic.
-		sortPackages(pkgs)
-		r, err = vulncheck.Source(ctx, pkgs, vcfg)
-		if err != nil {
-			die("govulncheck: %v", err)
+		if !*jsonFlag {
+			fmt.Println()
+			fmt.Println(sourceProgressMessage(pkgs))
 		}
-		unaffected = filterUnaffected(r)
-		r.Vulns = filterCalled(r)
+		res, err = govulncheck.Source(ctx, cfg, pkgs)
+	} else {
+		var f *os.File
+		f, err = os.Open(patterns[0])
+		if err != nil {
+			return err
+		}
+		defer f.Close()
+
+		if !*jsonFlag {
+			fmt.Println()
+			fmt.Println(binaryProgressMessage)
+		}
+		res, err = gvc.Binary(ctx, cfg, f)
+	}
+	if err != nil {
+		return err
 	}
 
 	if *jsonFlag {
-		writeJSON(r)
-	} else {
-		// set of top-level packages, used to find representative symbols
-		ci := govulncheck.GetCallInfo(r, pkgs)
-		writeText(r, ci, unaffected)
-	}
-	exitCode := 0
-	// Following go vet, fail with 3 if there are findings (in this case, vulns).
-	if len(r.Vulns) > 0 {
-		exitCode = 3
-	}
-	os.Exit(exitCode)
-}
-
-// filterCalled returns vulnerabilities where the symbols are actually called.
-func filterCalled(r *vulncheck.Result) []*vulncheck.Vuln {
-	var vulns []*vulncheck.Vuln
-	for _, v := range r.Vulns {
-		if v.CallSink != 0 {
-			vulns = append(vulns, v)
+		// Following golang.org/x/tools/go/analysis/singlechecker,
+		// return 0 exit code in -json mode.
+		if err := printJSON(res); err != nil {
+			return err
 		}
-	}
-	sortVulns(vulns)
-	return vulns
-}
-
-// filterUnaffected returns vulnerabilities where no symbols are called,
-// grouped by module.
-func filterUnaffected(r *vulncheck.Result) []*vulncheck.Vuln {
-	// It is possible that the same vuln.OSV.ID has vuln.CallSink != 0
-	// for one symbol, but vuln.CallSink == 0 for a different one, so
-	// we need to filter out ones that have been called.
-	called := filterCalled(r)
-	calledIDs := map[string]bool{}
-	for _, vuln := range called {
-		calledIDs[vuln.OSV.ID] = true
+		os.Exit(0)
 	}
 
-	idToVuln := map[string]*vulncheck.Vuln{}
-	for _, vuln := range r.Vulns {
-		if !calledIDs[vuln.OSV.ID] {
-			idToVuln[vuln.OSV.ID] = vuln
-		}
+	if err := printText(res, *verboseFlag, sourceAnalysis); err != nil {
+		return err
 	}
-	var output []*vulncheck.Vuln
-	for _, vuln := range idToVuln {
-		output = append(output, vuln)
-	}
-	sortVulns(output)
-	return output
-}
-
-func sortVulns(vulns []*vulncheck.Vuln) {
-	sort.Slice(vulns, func(i, j int) bool {
-		return vulns[i].OSV.ID > vulns[j].OSV.ID
-	})
-}
-
-func sortPackages(pkgs []*vulncheck.Package) {
-	sort.Slice(pkgs, func(i, j int) bool {
-		return pkgs[i].PkgPath < pkgs[j].PkgPath
-	})
-	for _, pkg := range pkgs {
-		sort.Slice(pkg.Imports, func(i, j int) bool {
-			return pkg.Imports[i].PkgPath < pkg.Imports[j].PkgPath
-		})
-	}
-}
-
-func writeJSON(r *vulncheck.Result) {
-	b, err := json.MarshalIndent(r, "", "\t")
-	if err != nil {
-		die("govulncheck: %s", err)
-	}
-	os.Stdout.Write(b)
-	fmt.Println()
-}
-
-const (
-	labelWidth = 16
-	lineLength = 55
-)
-
-func writeText(r *vulncheck.Result, ci *govulncheck.CallInfo, unaffected []*vulncheck.Vuln) {
-	uniqueVulns := map[string]bool{}
-	for _, v := range r.Vulns {
-		uniqueVulns[v.OSV.ID] = true
-	}
-	switch len(uniqueVulns) {
-	case 0:
-		fmt.Println("No vulnerabilities found.")
-		return
-	case 1:
-		fmt.Println("Found 1 known vulnerability.")
-	default:
-		fmt.Printf("Found %d known vulnerabilities.\n", len(uniqueVulns))
-	}
-	for idx, vg := range ci.VulnGroups {
-		fmt.Println()
-		// All the vulns in vg have the same PkgPath, ModPath and OSV.
-		// All have a non-zero CallSink.
-		v0 := vg[0]
-		id := v0.OSV.ID
-		details := wrap(v0.OSV.Details, 80-labelWidth)
-		found := foundVersion(v0.ModPath, v0.PkgPath, ci)
-		fixed := fixedVersion(v0.PkgPath, v0.OSV.Affected)
-
-		var stacks string
-		if !*verboseFlag {
-			stacks = defaultCallStacks(vg, ci)
-		} else {
-			stacks = verboseCallStacks(vg, ci)
-		}
-		var b strings.Builder
-		if len(stacks) > 0 {
-			b.WriteString(indent("\n\nCall stacks in your code:\n", 2))
-			b.WriteString(indent(stacks, 6))
-		}
-		writeVulnerability(idx+1, id, details, b.String(), found, fixed)
-	}
-	if len(unaffected) > 0 {
-		fmt.Printf(`
-=== Informational ===
-
-The vulnerabilities below are in packages that you import, but your code
-doesn't appear to call any vulnerable functions. You may not need to take any
-action. See https://pkg.go.dev/golang.org/x/vuln/cmd/govulncheck
-for details.
-`)
-		for idx, vuln := range unaffected {
-			found := foundVersion(vuln.ModPath, vuln.PkgPath, ci)
-			fixed := fixedVersion(vuln.PkgPath, vuln.OSV.Affected)
-			fmt.Println()
-			writeVulnerability(idx+1, vuln.OSV.ID, vuln.OSV.Details, "", found, fixed)
-		}
-	}
-}
-
-func writeVulnerability(idx int, id, details, callstack, found, fixed string) {
-	if fixed == "" {
-		fixed = "N/A"
-	}
-	fmt.Printf(`Vulnerability #%d: %s
-%s%s
-  Found in: %s
-  Fixed in: %s
-  More info: https://pkg.go.dev/vuln/%s
-`, idx, id, indent(details, 2), callstack, found, fixed, id)
-}
-
-func foundVersion(modulePath, pkgPath string, ci *govulncheck.CallInfo) string {
-	var found string
-	if v := ci.ModuleVersions[modulePath]; v != "" {
-		found = packageVersionString(pkgPath, v[1:])
-	}
-	return found
-}
-
-func fixedVersion(pkgPath string, affected []osv.Affected) string {
-	fixed := govulncheck.LatestFixed(affected)
-	if fixed != "" {
-		fixed = packageVersionString(pkgPath, fixed)
-	}
-	return fixed
-}
-
-func defaultCallStacks(vg []*vulncheck.Vuln, ci *govulncheck.CallInfo) string {
-	var summaries []string
-	for _, v := range vg {
-		if css := ci.CallStacks[v]; len(css) > 0 {
-			if sum := govulncheck.SummarizeCallStack(css[0], ci.TopPackages, v.PkgPath); sum != "" {
-				summaries = append(summaries, strings.TrimSpace(sum))
+	// Return exit status -3 if some vulnerabilities are actually
+	// called in source mode or just present in binary mode.
+	//
+	// This follows the style from
+	// golang.org/x/tools/go/analysis/singlechecker,
+	// which fails with 3 if there are some findings.
+	if sourceAnalysis {
+		for _, v := range res.Vulns {
+			if v.IsCalled() {
+				os.Exit(3)
 			}
 		}
+	} else if len(res.Vulns) > 0 {
+		os.Exit(3)
 	}
-	if len(summaries) > 0 {
-		sort.Strings(summaries)
-		summaries = compact(summaries)
-	}
-	var b strings.Builder
-	for _, s := range summaries {
-		b.WriteString(s)
-		b.WriteString("\n")
-	}
-	return b.String()
+	os.Exit(0)
+	return nil
 }
 
-func verboseCallStacks(vg []*vulncheck.Vuln, ci *govulncheck.CallInfo) string {
-	// Display one full call stack for each vuln.
-	i := 1
-	nMore := 0
-	var b strings.Builder
-	for _, v := range vg {
-		css := ci.CallStacks[v]
-		if len(css) == 0 {
-			continue
+func validateFlags(source bool) {
+	if !source {
+		if *testFlag {
+			die("govulncheck: the -test flag is invalid for binaries")
 		}
-		b.WriteString(fmt.Sprintf("#%d: for function %s\n", i, v.Symbol))
-		for _, e := range css[0] {
-			b.WriteString(fmt.Sprintf("  %s\n", govulncheck.FuncName(e.Function)))
-			if pos := govulncheck.AbsRelShorter(govulncheck.FuncPos(e.Call)); pos != "" {
-				b.WriteString(fmt.Sprintf("      %s\n", pos))
-			}
+		if tagsFlag != nil {
+			die("govulncheck: the -tags flag is invalid for binaries")
 		}
-		i++
-		nMore += len(css) - 1
 	}
-	if nMore > 0 {
-		b.WriteString(fmt.Sprintf("    There are %d more call stacks available.\n", nMore))
-		b.WriteString(fmt.Sprintf("To see all of them, pass the -json flags.\n"))
-	}
-	return b.String()
 }
 
 func isFile(path string) bool {
@@ -345,66 +189,38 @@ func isFile(path string) bool {
 	return !s.IsDir()
 }
 
-// compact replaces consecutive runs of equal elements with a single copy.
-// This is like the uniq command found on Unix.
-// compact modifies the contents of the slice s; it does not create a new slice.
-//
-// Modified (generics removed) from exp/slices/slices.go.
-func compact(s []string) []string {
-	if len(s) == 0 {
-		return s
-	}
-	i := 1
-	last := s[0]
-	for _, v := range s[1:] {
-		if v != last {
-			s[i] = v
-			i++
-			last = v
-		}
-	}
-	return s[:i]
-}
-
-func goVersion() string {
-	if v := os.Getenv("GOVERSION"); v != "" {
-		// Unlikely to happen in practice, mostly used for testing.
-		return v
-	}
-	out, err := exec.Command("go", "env", "GOVERSION").Output()
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "failed to determine go version; skipping stdlib scanning: %v\n", err)
-		return ""
-	}
-	return string(bytes.TrimSpace(out))
-}
-
-func packageVersionString(packagePath, version string) string {
-	v := "v" + version
-	if importPathInStdlib(packagePath) {
-		v = semverToGoTag(v)
-	}
-	return fmt.Sprintf("%s@%s", packagePath, v)
-}
-
 func die(format string, args ...interface{}) {
 	fmt.Fprintf(os.Stderr, format+"\n", args...)
 	os.Exit(1)
 }
 
-// indent returns the output of prefixing n spaces to s at every line break,
-// except for empty lines. See TestIndent for examples.
-func indent(s string, n int) string {
-	b := []byte(s)
-	var result []byte
-	shouldAppend := true
-	prefix := strings.Repeat(" ", n)
-	for _, c := range b {
-		if shouldAppend && c != '\n' {
-			result = append(result, prefix...)
-		}
-		result = append(result, c)
-		shouldAppend = c == '\n'
+// loadPackages loads the packages matching patterns at dir using build tags
+// provided by tagsFlag. Uses load mode needed for vulncheck analysis. If the
+// packages contain errors, a packageError is returned containing a list of
+// the errors, along with the packages themselves.
+func loadPackages(patterns []string, dir string) ([]*vulncheck.Package, error) {
+	var buildFlags []string
+	if tagsFlag != nil {
+		buildFlags = []string{fmt.Sprintf("-tags=%s", strings.Join(tagsFlag, ","))}
 	}
-	return string(result)
+
+	cfg := &packages.Config{Dir: dir, Tests: *testFlag}
+	cfg.Mode |= packages.NeedName | packages.NeedImports | packages.NeedTypes |
+		packages.NeedSyntax | packages.NeedTypesInfo | packages.NeedDeps |
+		packages.NeedModule
+	cfg.BuildFlags = buildFlags
+
+	pkgs, err := packages.Load(cfg, patterns...)
+	vpkgs := vulncheck.Convert(pkgs)
+	if err != nil {
+		return nil, err
+	}
+	var perrs []packages.Error
+	packages.Visit(pkgs, nil, func(p *packages.Package) {
+		perrs = append(perrs, p.Errors...)
+	})
+	if len(perrs) > 0 {
+		err = &packageError{perrs}
+	}
+	return vpkgs, err
 }

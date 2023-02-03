@@ -10,7 +10,7 @@
 // The expected database layout is the same for both HTTP and local
 // databases. The database index is located at the root of the
 // database, and contains a list of all of the vulnerable modules
-// documented in the databse and the time the most recent vulnerability
+// documented in the database and the time the most recent vulnerability
 // was added. The index file is called index.json, and has the
 // following format:
 //
@@ -45,6 +45,7 @@ import (
 	"golang.org/x/mod/module"
 	"golang.org/x/vuln/internal"
 	"golang.org/x/vuln/internal/derrors"
+	"golang.org/x/vuln/internal/web"
 	"golang.org/x/vuln/osv"
 )
 
@@ -61,6 +62,10 @@ type Client interface {
 	// GetByID returns the entry with the given ID, or (nil, nil) if there isn't
 	// one.
 	GetByID(context.Context, string) (*osv.Entry, error)
+
+	// GetByAlias returns the entries that have the given aliases, or (nil, nil)
+	// if there are none.
+	GetByAlias(context.Context, string) ([]*osv.Entry, error)
 
 	// ListIDs returns the IDs of all entries in the database.
 	ListIDs(context.Context) ([]string, error)
@@ -84,8 +89,20 @@ type localSource struct {
 
 func (*localSource) unexported() {}
 
-func (ls *localSource) GetByModule(_ context.Context, modulePath string) (_ []*osv.Entry, err error) {
+func (ls *localSource) GetByModule(ctx context.Context, modulePath string) (_ []*osv.Entry, err error) {
 	defer derrors.Wrap(&err, "localSource.GetByModule(%q)", modulePath)
+
+	index, err := ls.Index(ctx)
+	if err != nil {
+		return nil, err
+	}
+	// Query index first to be consistent with the way httpSource.GetByModule works.
+	// Prevents opening and stating files on disk that don't need to be touched. Also
+	// solves #56179.
+	if _, present := index[modulePath]; !present {
+		return nil, nil
+	}
+
 	epath, err := EscapeModulePath(modulePath)
 	if err != nil {
 		return nil, err
@@ -116,6 +133,32 @@ func (ls *localSource) GetByID(_ context.Context, id string) (_ *osv.Entry, err 
 		return nil, err
 	}
 	return &e, nil
+}
+
+func (ls *localSource) GetByAlias(ctx context.Context, alias string) (entries []*osv.Entry, err error) {
+	defer derrors.Wrap(&err, "localSource.GetByAlias(%q)", alias)
+
+	aliasToIDs, err := localReadJSON[map[string][]string](ctx, ls, "aliases.json")
+	if err != nil {
+		return nil, err
+	}
+	ids := aliasToIDs[alias]
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	return getByIDs(ctx, ls, ids)
+}
+
+func getByIDs(ctx context.Context, s source, ids []string) ([]*osv.Entry, error) {
+	var entries []*osv.Entry
+	for _, id := range ids {
+		e, err := s.GetByID(ctx, id)
+		if err != nil {
+			return nil, err
+		}
+		entries = append(entries, e)
+	}
+	return entries, nil
 }
 
 func (ls *localSource) ListIDs(ctx context.Context) (_ []string, err error) {
@@ -159,9 +202,18 @@ type httpSource struct {
 	c      *http.Client
 	cache  Cache
 	dbName string
+
+	// indexCalls counts the number of times Index()
+	// method has been called. httpCalls counts the
+	// number of times GetByModule makes an http request
+	// to the vuln db for a module path. Used for testing
+	// privacy properties of httpSource.
+	indexCalls int
+	httpCalls  int
 }
 
 func (hs *httpSource) Index(ctx context.Context) (_ DBIndex, err error) {
+	hs.indexCalls++ // for testing privacy properties
 	defer derrors.Wrap(&err, "Index()")
 
 	var cachedIndex DBIndex
@@ -254,6 +306,7 @@ func (hs *httpSource) GetByModule(ctx context.Context, modulePath string) (_ []*
 	if err != nil {
 		return nil, err
 	}
+	hs.httpCalls++ // for testing privacy properties
 	entries, err := httpReadJSON[[]*osv.Entry](ctx, hs, epath+".json")
 	if err != nil || entries == nil {
 		return nil, err
@@ -273,8 +326,8 @@ func (hs *httpSource) GetByModule(ctx context.Context, modulePath string) (_ []*
 // mustn't pass them to module.EscapePath.
 // Keep in sync with vulndb/internal/database/generate.go.
 var specialCaseModulePaths = map[string]bool{
-	"stdlib":    true,
-	"toolchain": true,
+	internal.GoStdModulePath: true,
+	internal.GoCmdModulePath: true,
 }
 
 // EscapeModulePath should be called by cache implementations or other users of
@@ -286,6 +339,16 @@ func EscapeModulePath(path string) (string, error) {
 		return path, nil
 	}
 	return module.EscapePath(path)
+}
+
+// UnescapeModulePath should be called to convert filesystem paths into module
+// paths. It is like golang.org/x/mod/module, but accounts for special paths
+// used by the vulnerability database.
+func UnescapeModulePath(path string) (string, error) {
+	if specialCaseModulePaths[path] {
+		return path, nil
+	}
+	return module.UnescapePath(path)
 }
 
 func latestModifiedTime(entries []*osv.Entry) time.Time {
@@ -304,6 +367,20 @@ func (hs *httpSource) GetByID(ctx context.Context, id string) (_ *osv.Entry, err
 	return httpReadJSON[*osv.Entry](ctx, hs, fmt.Sprintf("%s/%s.json", internal.IDDirectory, id))
 }
 
+func (hs *httpSource) GetByAlias(ctx context.Context, alias string) (entries []*osv.Entry, err error) {
+	defer derrors.Wrap(&err, "httpSource.GetByAlias(%q)", alias)
+
+	aliasToIDs, err := httpReadJSON[map[string][]string](ctx, hs, "aliases.json")
+	if err != nil {
+		return nil, err
+	}
+	ids := aliasToIDs[alias]
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	return getByIDs(ctx, hs, ids)
+}
+
 func (hs *httpSource) ListIDs(ctx context.Context) (_ []string, err error) {
 	defer derrors.Wrap(&err, "ListIDs()")
 
@@ -315,6 +392,9 @@ func httpReadJSON[T any](ctx context.Context, hs *httpSource, relativePath strin
 	content, err := hs.readBody(ctx, fmt.Sprintf("%s/%s", hs.url, relativePath))
 	if err != nil {
 		return zero, err
+	}
+	if len(content) == 0 {
+		return zero, nil
 	}
 	var t T
 	if err := json.Unmarshal(content, &t); err != nil {
@@ -379,17 +459,16 @@ type Options struct {
 func NewClient(sources []string, opts Options) (_ Client, err error) {
 	defer derrors.Wrap(&err, "NewClient(%v, opts)", sources)
 	c := &client{}
-	for _, uri := range sources {
-		uri = strings.TrimRight(uri, "/")
-		// should parse the URI out here instead of in there
-		switch {
-		case strings.HasPrefix(uri, "http://") || strings.HasPrefix(uri, "https://"):
-			hs := &httpSource{url: uri}
-			url, err := url.Parse(uri)
-			if err != nil {
-				return nil, err
-			}
-			hs.dbName = url.Hostname()
+	for _, source := range sources {
+		source = strings.TrimRight(source, "/") // TODO: why?
+		uri, err := url.Parse(source)
+		if err != nil {
+			return nil, err
+		}
+		switch uri.Scheme {
+		case "http", "https":
+			hs := &httpSource{url: uri.String()}
+			hs.dbName = uri.Hostname()
 			if opts.HTTPCache != nil {
 				hs.cache = opts.HTTPCache
 			}
@@ -399,8 +478,11 @@ func NewClient(sources []string, opts Options) (_ Client, err error) {
 				hs.c = new(http.Client)
 			}
 			c.sources = append(c.sources, hs)
-		case strings.HasPrefix(uri, "file://"):
-			dir := strings.TrimPrefix(uri, "file://")
+		case "file":
+			dir, err := web.URLToFilePath(uri)
+			if err != nil {
+				return nil, err
+			}
 			fi, err := os.Stat(dir)
 			if err != nil {
 				return nil, err
@@ -419,15 +501,35 @@ func NewClient(sources []string, opts Options) (_ Client, err error) {
 func (*client) unexported() {}
 
 func (c *client) GetByModule(ctx context.Context, module string) (_ []*osv.Entry, err error) {
-	defer derrors.Wrap(&err, "client.GetByModule(%q)", module)
+	defer derrors.Wrap(&err, "GetByModule(%q)", module)
+	return c.unionEntries(ctx, func(c Client) ([]*osv.Entry, error) {
+		return c.GetByModule(ctx, module)
+	})
+}
+
+func (c *client) GetByAlias(ctx context.Context, alias string) (entries []*osv.Entry, err error) {
+	defer derrors.Wrap(&err, "GetByAlias(%q)", alias)
+	return c.unionEntries(ctx, func(c Client) ([]*osv.Entry, error) {
+		return c.GetByAlias(ctx, alias)
+	})
+}
+
+// unionEntries returns the union of all entries obtained by calling get on the client's sources.
+func (c *client) unionEntries(ctx context.Context, get func(Client) ([]*osv.Entry, error)) ([]*osv.Entry, error) {
 	var entries []*osv.Entry
 	// probably should be parallelized
+	seen := map[string]bool{}
 	for _, s := range c.sources {
-		e, err := s.GetByModule(ctx, module)
+		es, err := get(s)
 		if err != nil {
 			return nil, err // be failure tolerant?
 		}
-		entries = append(entries, e...)
+		for _, e := range es {
+			if !seen[e.ID] {
+				entries = append(entries, e)
+				seen[e.ID] = true
+			}
+		}
 	}
 	return entries, nil
 }

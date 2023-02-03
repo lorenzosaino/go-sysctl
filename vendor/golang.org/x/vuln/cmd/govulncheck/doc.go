@@ -15,12 +15,10 @@ variable to specify a different database, which must implement the
 specification at https://go.dev/security/vuln/database.
 
 Govulncheck looks for vulnerabilities in Go programs using a specific build
-configuration. For analyzing source code, that configuration is the operating
-system, architecture, and Go version specified by GOOS, GOARCH, and the “go”
-command found on the PATH. For binaries, the build configuration is the one
-used to build the binary. Note that different build configurations may have
-different known vulnerabilities. For example, a dependency with a
-Windows-specific vulnerability will not be reported for a Linux build.
+configuration. For analyzing source code, that configuration is the Go version
+specified by the “go” command found on the PATH. For binaries, the build
+configuration is the one used to build the binary. Note that different build
+configurations may have different known vulnerabilities.
 
 Govulncheck must be built with Go version 1.18 or later.
 
@@ -53,7 +51,8 @@ Govulncheck uses the binary's symbol information to find mentions of vulnerable
 functions. Its output omits call stacks, which require source code analysis.
 
 Govulncheck exits successfully (exit code 0) if there are no vulnerabilities,
-and exits unsuccessfully if there are.
+and exits unsuccessfully if there are. It also exits successfully if -json flag
+is provided, regardless of the number of detected vulnerabilities.
 
 # Flags
 
@@ -63,7 +62,8 @@ The -v flag causes govulncheck to output more information about call stacks
 when run on source. It has no effect when run on a binary.
 
 The -json flag causes govulncheck to print its output as a JSON object
-corresponding to the type [golang.org/x/vuln/vulncheck.Result].
+corresponding to the type [golang.org/x/vuln/exp/govulncheck.Result]. The
+exit code of govulncheck is 0 when this flag is provided.
 
 The -tags flag accepts a comma-separated list of build tags to control which
 files should be included in loaded packages for source analysis.
@@ -84,13 +84,10 @@ Govulncheck uses [golang.org/x/vuln/vulncheck], which has these limitations:
     report false positives for code that is in the binary but unreachable.
   - There is no support for silencing vulnerability findings.
   - Govulncheck only reads binaries compiled with Go 1.18 and later.
-  - Govulncheck only reports vulnerabilities that apply to the current Go build
-    system and configuration (GOOS/GOARCH settings). For example, a
-    vulnerability that only applies to Linux will not be reported if
-    govulncheck is run on a Windows machine. A standard library vulnerability
-    that only applies for Go 1.18 will not be reported if the current Go
-    version is 1.19. See https://go.dev/issue/54841 for updates to this
-    limitation.
+  - Govulncheck only reports vulnerabilities that apply to the current Go
+    version. For example, a standard library vulnerability that only applies for
+    Go 1.18 will not be reported if the current Go version is 1.19. See
+    https://go.dev/issue/54841 for updates to this limitation.
 
 # Feedback
 

@@ -6,9 +6,9 @@ package vulncheck
 
 import (
 	"bytes"
+	"context"
 	"go/token"
 	"go/types"
-	"os"
 	"strings"
 
 	"golang.org/x/tools/go/callgraph"
@@ -25,7 +25,8 @@ import (
 // the ssa program encapsulating the packages and top level
 // ssa packages corresponding to pkgs.
 func buildSSA(pkgs []*Package, fset *token.FileSet) (*ssa.Program, []*ssa.Package) {
-	prog := ssa.NewProgram(fset, ssa.BuilderMode(0))
+	// TODO(#57221): what about entry functions that are generics?
+	prog := ssa.NewProgram(fset, ssa.InstantiateGenerics)
 
 	imports := make(map[*Package]*ssa.Package)
 	var createImports func([]*Package)
@@ -57,47 +58,38 @@ func buildSSA(pkgs []*Package, fset *token.FileSet) (*ssa.Program, []*ssa.Packag
 }
 
 // callGraph builds a call graph of prog based on VTA analysis.
-func callGraph(prog *ssa.Program, entries []*ssa.Function) *callgraph.Graph {
+func callGraph(ctx context.Context, prog *ssa.Program, entries []*ssa.Function) (*callgraph.Graph, error) {
 	entrySlice := make(map[*ssa.Function]bool)
 	for _, e := range entries {
 		entrySlice[e] = true
 	}
+
+	if err := ctx.Err(); err != nil { // cancelled?
+		return nil, err
+	}
 	initial := cha.CallGraph(prog)
 	allFuncs := ssautil.AllFunctions(prog)
 
-	fslice := forwardReachableFrom(entrySlice, initial)
+	fslice := forwardSlice(entrySlice, initial)
 	// Keep only actually linked functions.
 	pruneSet(fslice, allFuncs)
+
+	if err := ctx.Err(); err != nil { // cancelled?
+		return nil, err
+	}
 	vtaCg := vta.CallGraph(fslice, initial)
 
 	// Repeat the process once more, this time using
 	// the produced VTA call graph as the base graph.
-	fslice = forwardReachableFrom(entrySlice, vtaCg)
+	fslice = forwardSlice(entrySlice, vtaCg)
 	pruneSet(fslice, allFuncs)
 
+	if err := ctx.Err(); err != nil { // cancelled?
+		return nil, err
+	}
 	cg := vta.CallGraph(fslice, vtaCg)
-	// TODO(#53206): can we do the same for intermediate call graphs?
 	cg.DeleteSyntheticNodes()
-	return cg
-}
-
-// siteCallees computes a set of callees for call site `call` given program `callgraph`.
-func siteCallees(call ssa.CallInstruction, callgraph *callgraph.Graph) []*ssa.Function {
-	var matches []*ssa.Function
-
-	node := callgraph.Nodes[call.Parent()]
-	if node == nil {
-		return nil
-	}
-
-	for _, edge := range node.Out {
-		// Some callgraph analyses, such as CHA, might return synthetic (interface)
-		// methods as well as the concrete methods. Skip such synthetic functions.
-		if edge.Site == call {
-			matches = append(matches, edge.Callee.Func)
-		}
-	}
-	return matches
+	return cg, nil
 }
 
 // dbTypeFormat formats the name of t according how types
@@ -232,13 +224,6 @@ func funcRecvType(f *ssa.Function) string {
 	buf := new(bytes.Buffer)
 	types.WriteType(buf, v.Type(), nil)
 	return buf.String()
-}
-
-func lookupEnv(key, defaultValue string) string {
-	if v, ok := os.LookupEnv(key); ok {
-		return v
-	}
-	return defaultValue
 }
 
 // allSymbols returns all top-level functions and methods defined in pkg.
