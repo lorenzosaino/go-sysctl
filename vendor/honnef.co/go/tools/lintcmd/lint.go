@@ -82,9 +82,11 @@ func newLinter(opts options) (*linter, error) {
 }
 
 type lintResult struct {
-	checkedFiles []string
-	diagnostics  []diagnostic
-	warnings     []string
+	// These fields are exported so that we can gob encode them.
+
+	CheckedFiles []string
+	Diagnostics  []diagnostic
+	Warnings     []string
 }
 
 type options struct {
@@ -148,8 +150,8 @@ func (l *linter) run(bconf buildConfig) (lintResult, error) {
 		}()
 	}
 	res, err := l.lint(r, cfg, l.opts.patterns)
-	for i := range res.diagnostics {
-		res.diagnostics[i].buildName = bconf.Name
+	for i := range res.Diagnostics {
+		res.Diagnostics[i].BuildName = bconf.Name
 	}
 	return res, err
 }
@@ -185,10 +187,10 @@ func (l *linter) lint(r *runner.Runner, cfg *packages.Config, patterns []string)
 			panic("package has errors but isn't marked as failed")
 		}
 		if res.Failed {
-			out.diagnostics = append(out.diagnostics, failed(res)...)
+			out.Diagnostics = append(out.Diagnostics, failed(res)...)
 		} else {
 			if res.Skipped {
-				out.warnings = append(out.warnings, fmt.Sprintf("skipped package %s because it is too large", res.Package))
+				out.Warnings = append(out.Warnings, fmt.Sprintf("skipped package %s because it is too large", res.Package))
 				continue
 			}
 
@@ -196,7 +198,7 @@ func (l *linter) lint(r *runner.Runner, cfg *packages.Config, patterns []string)
 				continue
 			}
 
-			out.checkedFiles = append(out.checkedFiles, res.Package.GoFiles...)
+			out.CheckedFiles = append(out.CheckedFiles, res.Package.GoFiles...)
 			allowedAnalyzers := filterAnalyzerNames(analyzerNames, res.Config.Checks)
 			resd, err := res.Load()
 			if err != nil {
@@ -212,10 +214,10 @@ func (l *linter) lint(r *runner.Runner, cfg *packages.Config, patterns []string)
 				a := l.analyzers[diag.Category]
 				// Some diag.Category don't map to analyzers, such as "staticcheck"
 				if a != nil {
-					filtered[i].mergeIf = a.Doc.MergeIf
+					filtered[i].MergeIf = a.Doc.MergeIf
 				}
 			}
-			out.diagnostics = append(out.diagnostics, filtered...)
+			out.Diagnostics = append(out.Diagnostics, filtered...)
 
 			for _, obj := range resd.Unused.Used {
 				// Note: a side-effect of this code is that fields in instantiated structs are handled correctly. Even
@@ -254,13 +256,13 @@ func (l *linter) lint(r *runner.Runner, cfg *packages.Config, patterns []string)
 		if used[uo.key] {
 			continue
 		}
-		out.diagnostics = append(out.diagnostics, diagnostic{
+		out.Diagnostics = append(out.Diagnostics, diagnostic{
 			Diagnostic: runner.Diagnostic{
 				Position: uo.obj.DisplayPosition,
 				Message:  fmt.Sprintf("%s %s is unused", uo.obj.Kind, uo.obj.Name),
 				Category: "U1000",
 			},
-			mergeIf: lint.MergeIfAll,
+			MergeIf: lint.MergeIfAll,
 		})
 	}
 
@@ -300,7 +302,7 @@ func filterIgnored(diagnostics []diagnostic, res runner.ResultData, allowedAnaly
 		for i := range diagnostics {
 			diag := &diagnostics[i]
 			if ig.match(*diag) {
-				diag.severity = severityIgnored
+				diag.Severity = severityIgnored
 			}
 		}
 
@@ -394,9 +396,11 @@ func (s severity) String() string {
 // diagnostic represents a diagnostic in some source code.
 type diagnostic struct {
 	runner.Diagnostic
-	severity  severity
-	mergeIf   lint.MergeStrategy
-	buildName string
+
+	// These fields are exported so that we can gob encode them.
+	Severity  severity
+	MergeIf   lint.MergeStrategy
+	BuildName string
 }
 
 func (p diagnostic) equal(o diagnostic) bool {
@@ -404,14 +408,14 @@ func (p diagnostic) equal(o diagnostic) bool {
 		p.End == o.End &&
 		p.Message == o.Message &&
 		p.Category == o.Category &&
-		p.severity == o.severity &&
-		p.mergeIf == o.mergeIf &&
-		p.buildName == o.buildName
+		p.Severity == o.Severity &&
+		p.MergeIf == o.MergeIf &&
+		p.BuildName == o.BuildName
 }
 
 func (p *diagnostic) String() string {
-	if p.buildName != "" {
-		return fmt.Sprintf("%s [%s] (%s)", p.Message, p.buildName, p.Category)
+	if p.BuildName != "" {
+		return fmt.Sprintf("%s [%s] (%s)", p.Message, p.BuildName, p.Category)
 	} else {
 		return fmt.Sprintf("%s (%s)", p.Message, p.Category)
 	}
@@ -458,7 +462,7 @@ func failed(res runner.Result) []diagnostic {
 					Message:  msg,
 					Category: "compile",
 				},
-				severity: severityError,
+				Severity: severityError,
 			}
 			diagnostics = append(diagnostics, diag)
 		case error:
@@ -468,7 +472,7 @@ func failed(res runner.Result) []diagnostic {
 					Message:  e.Error(),
 					Category: "compile",
 				},
-				severity: severityError,
+				Severity: severityError,
 			}
 			diagnostics = append(diagnostics, diag)
 		}

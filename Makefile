@@ -34,13 +34,15 @@ vet: ## Run go vet
 
 .PHONY: staticcheck
 staticcheck: ## Run staticcheck
-	@[ -x "$(shell which staticcheck)" ] || $(GO) install ./vendor/honnef.co/go/tools/cmd/staticcheck 2>/dev/null || $(GO) install honnef.co/go/tools/cmd/staticcheck@latest
+	$(GO) install ./vendor/honnef.co/go/tools/cmd/staticcheck 2>/dev/null || @[ -x "$(shell which staticcheck)" ] || $(GO) install honnef.co/go/tools/cmd/staticcheck@latest
 	staticcheck ./...
 
+.PHONY: nilness
 nilness: ## Run nilness
 	$(GO) install ./vendor/golang.org/x/tools/go/analysis/passes/nilness/cmd/nilness 2>/dev/null || [ -x "$(shell which nilness)" ] || $(GO) install golang.org/x/tools/go/analysis/passes/nilness/cmd/nilness@latest
 	nilness ./...
 
+.PHONY: govulncheck
 govulncheck: ## Run govulncheck
 	$(GO) install ./vendor/golang.org/x/vuln/cmd/govulncheck 2>/dev/null || [ -x "$(shell which govulncheck)" ] || $(GO) install golang.org/x/vuln/cmd/govulncheck@latest
 	govulncheck ./...

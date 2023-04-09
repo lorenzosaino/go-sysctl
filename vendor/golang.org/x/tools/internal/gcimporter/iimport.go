@@ -85,7 +85,7 @@ const (
 // If the export data version is not recognized or the format is otherwise
 // compromised, an error is returned.
 func IImportData(fset *token.FileSet, imports map[string]*types.Package, data []byte, path string) (int, *types.Package, error) {
-	pkgs, err := iimportCommon(fset, imports, data, false, path, nil)
+	pkgs, err := iimportCommon(fset, GetPackageFromMap(imports), data, false, path, nil)
 	if err != nil {
 		return 0, nil, err
 	}
@@ -94,10 +94,33 @@ func IImportData(fset *token.FileSet, imports map[string]*types.Package, data []
 
 // IImportBundle imports a set of packages from the serialized package bundle.
 func IImportBundle(fset *token.FileSet, imports map[string]*types.Package, data []byte) ([]*types.Package, error) {
-	return iimportCommon(fset, imports, data, true, "", nil)
+	return iimportCommon(fset, GetPackageFromMap(imports), data, true, "", nil)
 }
 
-func iimportCommon(fset *token.FileSet, imports map[string]*types.Package, data []byte, bundle bool, path string, insert InsertType) (pkgs []*types.Package, err error) {
+// A GetPackageFunc is a function that gets the package with the given path
+// from the importer state, creating it (with the specified name) if necessary.
+// It is an abstraction of the map historically used to memoize package creation.
+//
+// Two calls with the same path must return the same package.
+//
+// If the given getPackage func returns nil, the import will fail.
+type GetPackageFunc = func(path, name string) *types.Package
+
+// GetPackageFromMap returns a GetPackageFunc that retrieves packages from the
+// given map of package path -> package.
+//
+// The resulting func may mutate m: if a requested package is not found, a new
+// package will be inserted into m.
+func GetPackageFromMap(m map[string]*types.Package) GetPackageFunc {
+	return func(path, name string) *types.Package {
+		if _, ok := m[path]; !ok {
+			m[path] = types.NewPackage(path, name)
+		}
+		return m[path]
+	}
+}
+
+func iimportCommon(fset *token.FileSet, getPackage GetPackageFunc, data []byte, bundle bool, path string, insert InsertType) (pkgs []*types.Package, err error) {
 	const currentVersion = iexportVersionCurrent
 	version := int64(-1)
 	if !debug {
@@ -138,9 +161,14 @@ func iimportCommon(fset *token.FileSet, imports map[string]*types.Package, data 
 
 	sLen := int64(r.uint64())
 	var fLen int64
+	var fileOffset []uint64
 	if insert != nil {
-		// shallow mode uses a different position encoding
+		// Shallow mode uses a different position encoding.
 		fLen = int64(r.uint64())
+		fileOffset = make([]uint64, r.uint64())
+		for i := range fileOffset {
+			fileOffset[i] = r.uint64()
+		}
 	}
 	dLen := int64(r.uint64())
 
@@ -157,8 +185,9 @@ func iimportCommon(fset *token.FileSet, imports map[string]*types.Package, data 
 
 		stringData:  stringData,
 		stringCache: make(map[uint64]string),
+		fileOffset:  fileOffset,
 		fileData:    fileData,
-		fileCache:   make(map[uint64]*token.File),
+		fileCache:   make([]*token.File, len(fileOffset)),
 		pkgCache:    make(map[uint64]*types.Package),
 
 		declData: declData,
@@ -189,10 +218,9 @@ func iimportCommon(fset *token.FileSet, imports map[string]*types.Package, data 
 		if pkgPath == "" {
 			pkgPath = path
 		}
-		pkg := imports[pkgPath]
+		pkg := getPackage(pkgPath, pkgName)
 		if pkg == nil {
-			pkg = types.NewPackage(pkgPath, pkgName)
-			imports[pkgPath] = pkg
+			errorf("internal error: getPackage returned nil package for %s", pkgPath)
 		} else if pkg.Name() != pkgName {
 			errorf("conflicting names %s and %s for package %q", pkg.Name(), pkgName, path)
 		}
@@ -288,8 +316,9 @@ type iimporter struct {
 
 	stringData  []byte
 	stringCache map[uint64]string
+	fileOffset  []uint64 // fileOffset[i] is offset in fileData for info about file encoded as i
 	fileData    []byte
-	fileCache   map[uint64]*token.File
+	fileCache   []*token.File // memoized decoding of file encoded as i
 	pkgCache    map[uint64]*types.Package
 
 	declData    []byte
@@ -362,25 +391,51 @@ func (p *iimporter) stringAt(off uint64) string {
 	return s
 }
 
-func (p *iimporter) fileAt(off uint64) *token.File {
-	file, ok := p.fileCache[off]
-	if !ok {
-		rd := intReader{bytes.NewReader(p.fileData[off:]), p.ipath}
-		filename := p.stringAt(rd.uint64())
-		size := int(rd.uint64())
-		file = p.fake.fset.AddFile(filename, -1, size)
+func (p *iimporter) fileAt(index uint64) *token.File {
+	file := p.fileCache[index]
+	if file == nil {
+		off := p.fileOffset[index]
+		file = p.decodeFile(intReader{bytes.NewReader(p.fileData[off:]), p.ipath})
+		p.fileCache[index] = file
+	}
+	return file
+}
 
-		if n := int(rd.uint64()); n > 0 {
-			lines := make([]int, n) // initial element always implicitly zero
-			for i := 1; i < n; i++ {
-				lines[i] = lines[i-1] + int(rd.uint64())
-			}
-			if !file.SetLines(lines) {
-				errorf("SetLines failed") // can't happen
-			}
+func (p *iimporter) decodeFile(rd intReader) *token.File {
+	filename := p.stringAt(rd.uint64())
+	size := int(rd.uint64())
+	file := p.fake.fset.AddFile(filename, -1, size)
+
+	// SetLines requires a nondecreasing sequence.
+	// Because it is common for clients to derive the interval
+	// [start, start+len(name)] from a start position, and we
+	// want to ensure that the end offset is on the same line,
+	// we fill in the gaps of the sparse encoding with values
+	// that strictly increase by the largest possible amount.
+	// This allows us to avoid having to record the actual end
+	// offset of each needed line.
+
+	lines := make([]int, int(rd.uint64()))
+	var index, offset int
+	for i, n := 0, int(rd.uint64()); i < n; i++ {
+		index += int(rd.uint64())
+		offset += int(rd.uint64())
+		lines[index] = offset
+
+		// Ensure monotonicity between points.
+		for j := index - 1; j > 0 && lines[j] == 0; j-- {
+			lines[j] = lines[j+1] - 1
 		}
+	}
 
-		p.fileCache[off] = file
+	// Ensure monotonicity after last point.
+	for j := len(lines) - 1; j > 0 && lines[j] == 0; j-- {
+		size--
+		lines[j] = size
+	}
+
+	if !file.SetLines(lines) {
+		errorf("SetLines failed: %d", lines) // can't happen
 	}
 	return file
 }

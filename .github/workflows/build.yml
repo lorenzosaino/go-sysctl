@@ -37,7 +37,7 @@ jobs:
       run: make nilness
     - name: Run staticcheck
       run: make staticcheck
-    - name: Run govulncheck
-      run: make govulncheck
     - name: Run tests
       run: make test
+    - name: Run govulncheck
+      run: make govulncheck

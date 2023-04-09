@@ -62,7 +62,7 @@ The -v flag causes govulncheck to output more information about call stacks
 when run on source. It has no effect when run on a binary.
 
 The -json flag causes govulncheck to print its output as a JSON object
-corresponding to the type [golang.org/x/vuln/exp/govulncheck.Result]. The
+corresponding to the type [golang.org/x/vuln/internal/govulncheck.Result]. The
 exit code of govulncheck is 0 when this flag is provided.
 
 The -tags flag accepts a comma-separated list of build tags to control which
@@ -72,7 +72,7 @@ The -test flag causes govulncheck to include test files in the source analysis.
 
 # Limitations
 
-Govulncheck uses [golang.org/x/vuln/vulncheck], which has these limitations:
+Govulncheck has these limitations:
 
   - Govulncheck analyzes function pointer and interface calls conservatively,
     which may result in false positives or inaccurate call stacks in some cases.

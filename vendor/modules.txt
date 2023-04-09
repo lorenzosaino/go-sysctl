@@ -9,30 +9,32 @@ github.com/google/go-cmp/cmp/internal/diff
 github.com/google/go-cmp/cmp/internal/flags
 github.com/google/go-cmp/cmp/internal/function
 github.com/google/go-cmp/cmp/internal/value
-# golang.org/x/exp v0.0.0-20230202163644-54bba9f4231b
-## explicit; go 1.18
-golang.org/x/exp/constraints
-golang.org/x/exp/maps
-golang.org/x/exp/slices
-# golang.org/x/exp/typeparams v0.0.0-20230202163644-54bba9f4231b
+# golang.org/x/exp/typeparams v0.0.0-20230321023759-10a507213a29
 ## explicit; go 1.18
 golang.org/x/exp/typeparams
-# golang.org/x/lint v0.0.0-20210508222113-6edffad5e616
-## explicit; go 1.11
-golang.org/x/lint
-golang.org/x/lint/golint
-# golang.org/x/mod v0.7.0
+# golang.org/x/mod v0.10.0
 ## explicit; go 1.17
 golang.org/x/mod/internal/lazyregexp
 golang.org/x/mod/module
 golang.org/x/mod/semver
-# golang.org/x/sys v0.4.0
+# golang.org/x/sync v0.1.0
+## explicit
+golang.org/x/sync/errgroup
+# golang.org/x/sys v0.7.0
 ## explicit; go 1.17
 golang.org/x/sys/execabs
-# golang.org/x/tools v0.5.1-0.20230117180257-8aba49bb5ea2
+# golang.org/x/tools v0.8.0
 ## explicit; go 1.18
 golang.org/x/tools/go/analysis
+golang.org/x/tools/go/analysis/internal/analysisflags
+golang.org/x/tools/go/analysis/internal/checker
+golang.org/x/tools/go/analysis/passes/buildssa
 golang.org/x/tools/go/analysis/passes/inspect
+golang.org/x/tools/go/analysis/passes/internal/analysisutil
+golang.org/x/tools/go/analysis/passes/nilness
+golang.org/x/tools/go/analysis/passes/nilness/cmd/nilness
+golang.org/x/tools/go/analysis/singlechecker
+golang.org/x/tools/go/analysis/unitchecker
 golang.org/x/tools/go/ast/astutil
 golang.org/x/tools/go/ast/inspector
 golang.org/x/tools/go/buildutil
@@ -49,31 +51,36 @@ golang.org/x/tools/go/ssa
 golang.org/x/tools/go/ssa/ssautil
 golang.org/x/tools/go/types/objectpath
 golang.org/x/tools/go/types/typeutil
+golang.org/x/tools/internal/diff
+golang.org/x/tools/internal/diff/lcs
 golang.org/x/tools/internal/event
 golang.org/x/tools/internal/event/core
 golang.org/x/tools/internal/event/keys
 golang.org/x/tools/internal/event/label
+golang.org/x/tools/internal/facts
 golang.org/x/tools/internal/gcimporter
 golang.org/x/tools/internal/gocommand
 golang.org/x/tools/internal/packagesinternal
 golang.org/x/tools/internal/pkgbits
+golang.org/x/tools/internal/robustio
+golang.org/x/tools/internal/tokeninternal
 golang.org/x/tools/internal/typeparams
 golang.org/x/tools/internal/typesinternal
-# golang.org/x/vuln v0.0.0-20230201222900-4c848edceff1
+# golang.org/x/vuln v0.0.0-20230407211851-ee3d87385065
 ## explicit; go 1.18
-golang.org/x/vuln/client
 golang.org/x/vuln/cmd/govulncheck
-golang.org/x/vuln/exp/govulncheck
 golang.org/x/vuln/internal
+golang.org/x/vuln/internal/client
 golang.org/x/vuln/internal/derrors
 golang.org/x/vuln/internal/govulncheck
+golang.org/x/vuln/internal/osv
+golang.org/x/vuln/internal/scan
 golang.org/x/vuln/internal/semver
+golang.org/x/vuln/internal/vulncheck
+golang.org/x/vuln/internal/vulncheck/internal/buildinfo
+golang.org/x/vuln/internal/vulncheck/internal/gosym
 golang.org/x/vuln/internal/web
-golang.org/x/vuln/osv
-golang.org/x/vuln/vulncheck
-golang.org/x/vuln/vulncheck/internal/binscan
-golang.org/x/vuln/vulncheck/internal/gosym
-# honnef.co/go/tools v0.4.0
+# honnef.co/go/tools v0.4.3
 ## explicit; go 1.19
 honnef.co/go/tools/analysis/code
 honnef.co/go/tools/analysis/edit

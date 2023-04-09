@@ -21,9 +21,8 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"sync"
-	"unsafe"
 
+	"golang.org/x/tools/internal/tokeninternal"
 	"golang.org/x/tools/internal/typeparams"
 )
 
@@ -45,12 +44,12 @@ func IExportShallow(fset *token.FileSet, pkg *types.Package) ([]byte, error) {
 	return out.Bytes(), err
 }
 
-// IImportShallow decodes "shallow" types.Package data encoded by IExportShallow
-// in the same executable. This function cannot import data from
+// IImportShallow decodes "shallow" types.Package data encoded by
+// IExportShallow in the same executable. This function cannot import data from
 // cmd/compile or gcexportdata.Write.
-func IImportShallow(fset *token.FileSet, imports map[string]*types.Package, data []byte, path string, insert InsertType) (*types.Package, error) {
+func IImportShallow(fset *token.FileSet, getPackage GetPackageFunc, data []byte, path string, insert InsertType) (*types.Package, error) {
 	const bundle = false
-	pkgs, err := iimportCommon(fset, imports, data, bundle, path, insert)
+	pkgs, err := iimportCommon(fset, getPackage, data, bundle, path, insert)
 	if err != nil {
 		return nil, err
 	}
@@ -102,7 +101,6 @@ func iexportCommon(out io.Writer, fset *token.FileSet, bundle, shallow bool, ver
 		shallow:     shallow,
 		allPkgs:     map[*types.Package]bool{},
 		stringIndex: map[string]uint64{},
-		fileIndex:   map[*token.File]uint64{},
 		declIndex:   map[types.Object]uint64{},
 		tparamNames: map[types.Object]string{},
 		typIndex:    map[types.Type]uint64{},
@@ -141,6 +139,17 @@ func iexportCommon(out io.Writer, fset *token.FileSet, bundle, shallow bool, ver
 		p.doDecl(p.declTodo.popHead())
 	}
 
+	// Produce index of offset of each file record in files.
+	var files intWriter
+	var fileOffset []uint64 // fileOffset[i] is offset in files of file encoded as i
+	if p.shallow {
+		fileOffset = make([]uint64, len(p.fileInfos))
+		for i, info := range p.fileInfos {
+			fileOffset[i] = uint64(files.Len())
+			p.encodeFile(&files, info.file, info.needed)
+		}
+	}
+
 	// Append indices to data0 section.
 	dataLen := uint64(p.data0.Len())
 	w := p.newWriter()
@@ -167,7 +176,11 @@ func iexportCommon(out io.Writer, fset *token.FileSet, bundle, shallow bool, ver
 	hdr.uint64(uint64(p.version))
 	hdr.uint64(uint64(p.strings.Len()))
 	if p.shallow {
-		hdr.uint64(uint64(p.files.Len()))
+		hdr.uint64(uint64(files.Len()))
+		hdr.uint64(uint64(len(fileOffset)))
+		for _, offset := range fileOffset {
+			hdr.uint64(offset)
+		}
 	}
 	hdr.uint64(dataLen)
 
@@ -175,11 +188,60 @@ func iexportCommon(out io.Writer, fset *token.FileSet, bundle, shallow bool, ver
 	io.Copy(out, &hdr)
 	io.Copy(out, &p.strings)
 	if p.shallow {
-		io.Copy(out, &p.files)
+		io.Copy(out, &files)
 	}
 	io.Copy(out, &p.data0)
 
 	return nil
+}
+
+// encodeFile writes to w a representation of the file sufficient to
+// faithfully restore position information about all needed offsets.
+// Mutates the needed array.
+func (p *iexporter) encodeFile(w *intWriter, file *token.File, needed []uint64) {
+	_ = needed[0] // precondition: needed is non-empty
+
+	w.uint64(p.stringOff(file.Name()))
+
+	size := uint64(file.Size())
+	w.uint64(size)
+
+	// Sort the set of needed offsets. Duplicates are harmless.
+	sort.Slice(needed, func(i, j int) bool { return needed[i] < needed[j] })
+
+	lines := tokeninternal.GetLines(file) // byte offset of each line start
+	w.uint64(uint64(len(lines)))
+
+	// Rather than record the entire array of line start offsets,
+	// we save only a sparse list of (index, offset) pairs for
+	// the start of each line that contains a needed position.
+	var sparse [][2]int // (index, offset) pairs
+outer:
+	for i, lineStart := range lines {
+		lineEnd := size
+		if i < len(lines)-1 {
+			lineEnd = uint64(lines[i+1])
+		}
+		// Does this line contains a needed offset?
+		if needed[0] < lineEnd {
+			sparse = append(sparse, [2]int{i, lineStart})
+			for needed[0] < lineEnd {
+				needed = needed[1:]
+				if len(needed) == 0 {
+					break outer
+				}
+			}
+		}
+	}
+
+	// Delta-encode the columns.
+	w.uint64(uint64(len(sparse)))
+	var prev [2]int
+	for _, pair := range sparse {
+		w.uint64(uint64(pair[0] - prev[0]))
+		w.uint64(uint64(pair[1] - prev[1]))
+		prev = pair
+	}
 }
 
 // writeIndex writes out an object index. mainIndex indicates whether
@@ -266,8 +328,9 @@ type iexporter struct {
 
 	// In shallow mode, object positions are encoded as (file, offset).
 	// Each file is recorded as a line-number table.
-	files     intWriter
-	fileIndex map[*token.File]uint64
+	// Only the lines of needed positions are saved faithfully.
+	fileInfo  map[*token.File]uint64 // value is index in fileInfos
+	fileInfos []*filePositions
 
 	data0       intWriter
 	declIndex   map[types.Object]uint64
@@ -275,6 +338,11 @@ type iexporter struct {
 	typIndex    map[types.Type]uint64
 
 	indent int // for tracing support
+}
+
+type filePositions struct {
+	file   *token.File
+	needed []uint64 // unordered list of needed file offsets
 }
 
 func (p *iexporter) trace(format string, args ...interface{}) {
@@ -300,33 +368,23 @@ func (p *iexporter) stringOff(s string) uint64 {
 	return off
 }
 
-// fileOff returns the offset of the token.File encoding.
-// If not already present, it's added to the end.
-func (p *iexporter) fileOff(file *token.File) uint64 {
-	off, ok := p.fileIndex[file]
+// fileIndexAndOffset returns the index of the token.File and the byte offset of pos within it.
+func (p *iexporter) fileIndexAndOffset(file *token.File, pos token.Pos) (uint64, uint64) {
+	index, ok := p.fileInfo[file]
 	if !ok {
-		off = uint64(p.files.Len())
-		p.fileIndex[file] = off
-
-		p.files.uint64(p.stringOff(file.Name()))
-		p.files.uint64(uint64(file.Size()))
-
-		// Delta-encode the line offsets, omitting the initial zero.
-		// (An empty file has an empty lines array.)
-		//
-		// TODO(adonovan): opt: use a two-pass approach that
-		// first gathers the set of Pos values and then
-		// encodes only the information necessary for them.
-		// This would allow us to discard the lines after the
-		// last object of interest and to run-length encode the
-		// trivial lines between lines with needed positions.
-		lines := getLines(file)
-		p.files.uint64(uint64(len(lines)))
-		for i := 1; i < len(lines); i++ {
-			p.files.uint64(uint64(lines[i] - lines[i-1]))
+		index = uint64(len(p.fileInfo))
+		p.fileInfos = append(p.fileInfos, &filePositions{file: file})
+		if p.fileInfo == nil {
+			p.fileInfo = make(map[*token.File]uint64)
 		}
+		p.fileInfo[file] = index
 	}
-	return off
+	// Record each needed offset.
+	info := p.fileInfos[index]
+	offset := uint64(file.Offset(pos))
+	info.needed = append(info.needed, offset)
+
+	return index, offset
 }
 
 // pushDecl adds n to the declaration work queue, if not already present.
@@ -526,8 +584,9 @@ func (w *exportWriter) posV2(pos token.Pos) {
 		return
 	}
 	file := w.p.fset.File(pos) // fset must be non-nil
-	w.uint64(1 + w.p.fileOff(file))
-	w.uint64(uint64(file.Offset(pos)))
+	index, offset := w.p.fileIndexAndOffset(file, pos)
+	w.uint64(1 + index)
+	w.uint64(offset)
 }
 
 func (w *exportWriter) posV1(pos token.Pos) {
@@ -1118,51 +1177,4 @@ func (q *objQueue) popHead() types.Object {
 	obj := q.ring[q.head%len(q.ring)]
 	q.head++
 	return obj
-}
-
-// getLines returns the table of line-start offsets from a token.File.
-func getLines(file *token.File) []int {
-	// Use this variant once proposal #57708 is implemented:
-	//
-	// if file, ok := file.(interface{ Lines() []int }); ok {
-	// 	return file.Lines()
-	// }
-
-	// This declaration must match that of token.File.
-	// This creates a risk of dependency skew.
-	// For now we check that the size of the two
-	// declarations is the same, on the (fragile) assumption
-	// that future changes would add fields.
-	type tokenFile119 struct {
-		_     string
-		_     int
-		_     int
-		mu    sync.Mutex // we're not complete monsters
-		lines []int
-		_     []struct{}
-	}
-	type tokenFile118 struct {
-		_ *token.FileSet // deleted in go1.19
-		tokenFile119
-	}
-
-	type uP = unsafe.Pointer
-	switch unsafe.Sizeof(*file) {
-	case unsafe.Sizeof(tokenFile118{}):
-		var ptr *tokenFile118
-		*(*uP)(uP(&ptr)) = uP(file)
-		ptr.mu.Lock()
-		defer ptr.mu.Unlock()
-		return ptr.lines
-
-	case unsafe.Sizeof(tokenFile119{}):
-		var ptr *tokenFile119
-		*(*uP)(uP(&ptr)) = uP(file)
-		ptr.mu.Lock()
-		defer ptr.mu.Unlock()
-		return ptr.lines
-
-	default:
-		panic("unexpected token.File size")
-	}
 }
